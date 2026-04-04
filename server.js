@@ -8,7 +8,6 @@ const connectDB = require('./config/db');
 const callRoutes = require('./routes/callRoutes');
 const smsRoutes = require('./routes/smsRoutes');
 const contactRoutes = require('./routes/contactRoutes');
-const tokenRoutes = require('./routes/tokenRoutes');
 const voiceRoutes = require('./routes/voiceRoutes');
 
 const app = express();
