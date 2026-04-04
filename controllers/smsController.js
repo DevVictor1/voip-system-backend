@@ -2,10 +2,10 @@ const Message = require('../models/Message');
 const Contact = require('../models/Contact');
 const client = require('../config/twilio');
 
-// 🔥 STRONG NORMALIZATION (FIXES EVERYTHING)
+// 🔥 NORMALIZE (SAFE)
 const normalize = (num) => {
   if (!num) return '';
-  return num.replace(/\D/g, '').slice(-10); // last 10 digits only
+  return num.replace(/\D/g, '').slice(-10);
 };
 
 // 🔍 FIND CONTACT
@@ -13,11 +13,7 @@ const findContactByPhone = async (phone) => {
   const normalized = normalize(phone);
 
   return await Contact.findOne({
-    phones: {
-      $elemMatch: {
-        number: normalized,
-      },
-    },
+    'phones.number': normalized,
   });
 };
 
@@ -26,9 +22,13 @@ exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
 
+    console.log('📩 INCOMING SMS:', From, Body);
+
     const message = await Message.create({
       from: normalize(From),
       to: normalize(To),
+      fromFull: From,     // 🔥 KEEP ORIGINAL
+      toFull: To,         // 🔥 KEEP ORIGINAL
       body: Body,
       direction: 'inbound',
       read: false,
@@ -62,13 +62,15 @@ exports.sendSMS = async (req, res) => {
       body: text,
       from: process.env.TWILIO_PHONE_NUMBER,
       to,
-      statusCallback: `${process.env.BASE_URL}/api/sms/status`,
+      statusCallback: `${process.env.BASE_URL?.trim()}/api/sms/status`,
     });
 
     const saved = await Message.create({
       sid: twilioRes.sid,
       from: normalize(process.env.TWILIO_PHONE_NUMBER),
       to: normalizedTo,
+      fromFull: process.env.TWILIO_PHONE_NUMBER,
+      toFull: to,
       body: text,
       direction: 'outbound',
       status: twilioRes.status || 'queued',
@@ -104,7 +106,7 @@ exports.smsStatusCallback = async (req, res) => {
   }
 };
 
-// 📚 GET CONVERSATIONS (🔥 FULL FIX)
+// 📚 GET CONVERSATIONS
 exports.getConversations = async (req, res) => {
   try {
     const messages = await Message.find().sort({ createdAt: -1 });
@@ -132,7 +134,6 @@ exports.getConversations = async (req, res) => {
         };
       }
 
-      // 🔥 COUNT UNREAD CORRECTLY
       if (!msg.read && msg.direction === 'inbound') {
         conversations[key].unread += 1;
       }
@@ -146,7 +147,7 @@ exports.getConversations = async (req, res) => {
   }
 };
 
-// 💬 GET MESSAGES (🔥 FIXED)
+// 💬 GET MESSAGES
 exports.getMessages = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
