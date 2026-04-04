@@ -1,4 +1,3 @@
-const client = require('../config/twilio');
 const Call = require('../models/Call');
 const Contact = require('../models/Contact');
 
@@ -35,7 +34,7 @@ exports.makeCall = async (req, res) => {
   });
 };
 
-// 📞 OUTBOUND TWIML
+// 📞 OUTBOUND TWIML ✅ FIXED
 exports.handleOutboundCall = async (req, res) => {
   try {
     const { To } = req.body;
@@ -51,7 +50,6 @@ exports.handleOutboundCall = async (req, res) => {
     record="record-from-answer"
     recordingStatusCallback="${process.env.BASE_URL}/api/calls/recording-status"
     recordingStatusCallbackMethod="POST"
-
     statusCallback="${process.env.BASE_URL}/api/calls/call-status"
     statusCallbackEvent="initiated ringing answered completed"
     statusCallbackMethod="POST"
@@ -74,17 +72,17 @@ exports.handleCallStatus = async (req, res) => {
     console.log('📊 STATUS:', CallSid, CallStatus);
 
     const updated = await Call.findOneAndUpdate(
-  { callSid: CallSid },
-  {
-    callSid: CallSid,
-    from: req.body.From,
-    to: req.body.To,
-    status: CallStatus,
-    duration: CallDuration || null,
-    direction: req.body.Direction || 'outbound'
-  },
-  { upsert: true, returnDocument: 'after' }
-);
+      { callSid: CallSid },
+      {
+        callSid: CallSid,
+        from: req.body.From,
+        to: req.body.To,
+        status: CallStatus,
+        duration: CallDuration || null,
+        direction: req.body.Direction || 'outbound'
+      },
+      { upsert: true, returnDocument: 'after' }
+    );
 
     if (global.io && updated) {
       global.io.emit('callStatus', {
@@ -146,7 +144,7 @@ exports.handleRecordingStatus = async (req, res) => {
         recordingUrl: finalUrl,
         recordingSid: RecordingSid,
         duration: duration,
-        status: 'completed', // 🔥 force complete
+        status: 'completed',
       },
       { returnDocument: 'after' }
     );
@@ -181,7 +179,7 @@ exports.getCalls = async (req, res) => {
   }
 };
 
-// 📞 INCOMING CALL (🔥 WITH CALLER IDENTIFICATION)
+// 📞 INCOMING CALL
 exports.handleIncomingCall = async (req, res) => {
   try {
     const CallSid = req.body?.CallSid;
@@ -190,14 +188,12 @@ exports.handleIncomingCall = async (req, res) => {
 
     console.log('📞 INBOUND CALL:', From, '→', To);
 
-    // 🔥 FIND CONTACT
     const normalizedFrom = normalizePhone(From);
 
     const contact = await Contact.findOne({
       'phones.number': { $regex: normalizedFrom.slice(-10) }
     });
 
-    // ✅ SAVE CALL
     await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
@@ -210,7 +206,6 @@ exports.handleIncomingCall = async (req, res) => {
       { upsert: true, returnDocument: 'after' }
     );
 
-    // 🔥 SOCKET EVENTS WITH CONTACT
     if (global.io) {
       global.io.emit('incomingCall', {
         callSid: CallSid,
@@ -251,7 +246,6 @@ exports.handleIncomingCall = async (req, res) => {
   } catch (err) {
     console.error('❌ Incoming call error:', err);
 
-    // 🔥 NEVER FAIL TWILIO
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Say>Error</Say></Response>`);
   }
