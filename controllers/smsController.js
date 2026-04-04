@@ -1,5 +1,5 @@
 const Message = require('../models/Message');
-const Contact = require('../models/contact');
+const Contact = require('../models/Contact');
 const client = require('../config/twilio');
 
 // 🔥 STRONG NORMALIZATION (FIXES EVERYTHING)

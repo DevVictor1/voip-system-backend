@@ -1,6 +1,6 @@
 const client = require('../config/twilio');
 const Call = require('../models/Call');
-const Contact = require('../models/contact');
+const Contact = require('../models/Contact');
 
 // ADD THIS AT THE TOP (if not already)
 const normalizePhone = (phone) => {
