@@ -51,8 +51,10 @@ exports.handleOutboundCall = async (req, res) => {
     record="record-from-answer"
     recordingStatusCallback="${process.env.BASE_URL}/api/calls/recording-status"
     recordingStatusCallbackMethod="POST"
-    action="${process.env.BASE_URL}/api/calls/call-status"
-    method="POST"
+
+    statusCallback="${process.env.BASE_URL}/api/calls/call-status"
+    statusCallbackEvent="initiated ringing answered completed"
+    statusCallbackMethod="POST"
   >
     <Number>${To}</Number>
   </Dial>
