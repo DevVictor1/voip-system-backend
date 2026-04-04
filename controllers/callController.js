@@ -149,32 +149,26 @@ exports.handleRecordingStatus = async (req, res) => {
       { returnDocument: 'after' }
     );
 
-    // 🔥 TRY 2: FALLBACK (for outbound only)
-    if (!updated) {
-      console.log('⚠️ No direct match, trying fallback...');
+    // 🔥 TRY 2: FALLBACK (SMART FIX FOR OUTBOUND)
+if (!updated) {
+  console.log('⚠️ No direct match, using LAST OUTBOUND CALL');
 
-      const client = require('../config/twilio');
-      const call = await client.calls(CallSid).fetch();
-
-      const from = call.from;
-      const to = call.to;
-
-      updated = await Call.findOneAndUpdate(
-        {
-          $or: [
-            { from: from, to: to },
-            { from: to, to: from }
-          ]
-        },
-        {
-          recordingUrl: finalUrl,
-          recordingSid: RecordingSid,
-          duration: duration,
-          status: 'completed',
-        },
-        { sort: { createdAt: -1 }, returnDocument: 'after' }
-      );
+  updated = await Call.findOneAndUpdate(
+    {
+      direction: { $regex: 'outbound' }
+    },
+    {
+      recordingUrl: finalUrl,
+      recordingSid: RecordingSid,
+      duration: duration,
+      status: 'completed',
+    },
+    {
+      sort: { createdAt: -1 }, // 🔥 THIS IS THE KEY
+      returnDocument: 'after'
     }
+  );
+}
 
     if (global.io && updated) {
       console.log('📡 EMITTING COMPLETED');
