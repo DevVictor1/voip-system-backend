@@ -45,19 +45,15 @@ exports.handleOutboundCall = async (req, res) => {
 
     res.send(`
 <Response>
-  <Dial
-    callerId="${process.env.TWILIO_PHONE_NUMBER}"
-    record="record-from-answer"
-    recordingStatusCallback="${process.env.BASE_URL?.trim()}/api/calls/recording-status"
-    recordingStatusCallbackMethod="POST"
-  >
+  <Dial callerId="${process.env.TWILIO_PHONE_NUMBER}">
     <Number
       statusCallback="${process.env.BASE_URL?.trim()}/api/calls/call-status"
       statusCallbackEvent="initiated ringing answered completed"
       statusCallbackMethod="POST"
-    >
-      ${To}
-    </Number>
+      recordingStatusCallback="${process.env.BASE_URL?.trim()}/api/calls/recording-status"
+      recordingStatusCallbackMethod="POST"
+      record="record-from-answer"
+    >${To}</Number>
   </Dial>
 </Response>
 `);
