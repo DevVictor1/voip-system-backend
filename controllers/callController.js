@@ -137,14 +137,9 @@ exports.handleRecordingStatus = async (req, res) => {
       ? `${RecordingUrl}.mp3`
       : null;
 
-    // 🔥 UPDATE BOTH PARENT + CHILD
-    const updated = await Call.findOneAndUpdate(
-      {
-        $or: [
-          { callSid: CallSid },
-          { parentCallSid: CallSid }
-        ]
-      },
+    // 🔥 TRY 1: EXACT MATCH (like inbound)
+    let updated = await Call.findOneAndUpdate(
+      { callSid: CallSid },
       {
         recordingUrl: finalUrl,
         recordingSid: RecordingSid,
@@ -154,11 +149,38 @@ exports.handleRecordingStatus = async (req, res) => {
       { returnDocument: 'after' }
     );
 
-    if (global.io) {
+    // 🔥 TRY 2: FALLBACK (for outbound only)
+    if (!updated) {
+      console.log('⚠️ No direct match, trying fallback...');
+
+      const client = require('../config/twilio');
+      const call = await client.calls(CallSid).fetch();
+
+      const from = call.from;
+      const to = call.to;
+
+      updated = await Call.findOneAndUpdate(
+        {
+          $or: [
+            { from: from, to: to },
+            { from: to, to: from }
+          ]
+        },
+        {
+          recordingUrl: finalUrl,
+          recordingSid: RecordingSid,
+          duration: duration,
+          status: 'completed',
+        },
+        { sort: { createdAt: -1 }, returnDocument: 'after' }
+      );
+    }
+
+    if (global.io && updated) {
       console.log('📡 EMITTING COMPLETED');
 
       global.io.emit('callStatus', {
-        callSid: CallSid,
+        callSid: updated.callSid,
         status: 'completed',
       });
     }
