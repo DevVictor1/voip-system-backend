@@ -12,7 +12,7 @@ const {
 } = require('../controllers/smsController');
 
 // 📩 Incoming
-router.post('/receive', receiveSMS);
+router.post('/webhook', receiveSMS);
 router.post('/incoming-sms', receiveSMS);
 
 // 📤 Send
