@@ -73,8 +73,29 @@ exports.handleCallStatus = async (req, res) => {
     const { CallSid, CallStatus, CallDuration } = req.body;
 
     console.log('🔥 CALL STATUS WEBHOOK HIT');
-
     console.log('📊 STATUS:', CallSid, CallStatus);
+
+    let recordingUrl = null;
+
+    // 🔥 ONLY RUN WHEN CALL COMPLETES
+    if (CallStatus === 'completed') {
+      try {
+        const client = require('../config/twilio');
+
+        const recordings = await client.recordings.list({
+          callSid: CallSid,
+          limit: 1,
+        });
+
+        if (recordings.length > 0) {
+          recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Recordings/${recordings[0].sid}.mp3`;
+
+          console.log('🎧 Recording fetched:', recordingUrl);
+        }
+      } catch (err) {
+        console.log('⚠️ Recording fetch failed:', err.message);
+      }
+    }
 
     const updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
@@ -84,7 +105,8 @@ exports.handleCallStatus = async (req, res) => {
         to: req.body.To,
         status: CallStatus,
         duration: CallDuration || null,
-        direction: req.body.Direction || 'outbound'
+        direction: req.body.Direction || 'outbound',
+        ...(recordingUrl && { recordingUrl }), // 🔥 SAFE ADD (won’t break anything)
       },
       { upsert: true, returnDocument: 'after' }
     );
@@ -95,13 +117,8 @@ exports.handleCallStatus = async (req, res) => {
         status: CallStatus,
       });
 
-      // 🔥 VERY IMPORTANT: CLOSE POPUP WHEN CALL ENDS
       if (
-        CallStatus === 'completed' ||
-        CallStatus === 'canceled' ||
-        CallStatus === 'failed' ||
-        CallStatus === 'busy' ||
-        CallStatus === 'no-answer'
+        ['completed', 'canceled', 'failed', 'busy', 'no-answer'].includes(CallStatus)
       ) {
         console.log('🔴 CALL ENDED EVENT');
 
