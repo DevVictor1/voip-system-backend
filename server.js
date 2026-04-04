@@ -40,7 +40,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/calls', callRoutes);
 app.use('/api/sms', smsRoutes);
 app.use('/api/contacts', contactRoutes);
-app.use('/api', tokenRoutes);
 app.use('/api/voice', voiceRoutes);
 
 // ✅ TEST ROUTE
