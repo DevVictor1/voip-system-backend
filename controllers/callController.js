@@ -33,7 +33,7 @@ exports.makeCall = async (req, res) => {
   });
 };
 
-// 📞 OUTBOUND TWIML (UNCHANGED)
+// 📞 OUTBOUND TWIML
 exports.handleOutboundCall = async (req, res) => {
   try {
     const { To } = req.body;
@@ -66,60 +66,24 @@ exports.handleOutboundCall = async (req, res) => {
   }
 };
 
-// 📊 STATUS UPDATE (🔥 FIXED ONLY HERE)
+// 📊 STATUS UPDATE (🔥 FIXED)
 exports.handleCallStatus = async (req, res) => {
   try {
-    const { CallSid, CallStatus, CallDuration } = req.body;
+    const { CallSid, CallStatus, CallDuration, ParentCallSid } = req.body;
 
     console.log('🔥 CALL STATUS WEBHOOK HIT');
     console.log('📊 STATUS:', CallSid, CallStatus);
-
-    let recordingUrl = null;
-
-    if (CallStatus === 'completed') {
-      try {
-        const client = require('../config/twilio');
-
-        // 🔥 STEP 1: GET CHILD CALL
-        const childCalls = await client.calls.list({
-          parentCallSid: CallSid,
-          limit: 1,
-        });
-
-        let targetCallSid = CallSid;
-
-        if (childCalls.length > 0) {
-          targetCallSid = childCalls[0].sid;
-          console.log('🔁 Using child call SID:', targetCallSid);
-        }
-
-        // 🔥 STEP 2: FETCH RECORDING FROM CORRECT CALL
-        const recordings = await client.recordings.list({
-          callSid: targetCallSid,
-          limit: 1,
-        });
-
-        if (recordings.length > 0) {
-          recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Recordings/${recordings[0].sid}.mp3`;
-
-          console.log('🎧 Recording fetched:', recordingUrl);
-        }
-
-      } catch (err) {
-        console.log('⚠️ Recording fetch failed:', err.message);
-      }
-    }
 
     const updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
         callSid: CallSid,
+        parentCallSid: ParentCallSid || null, // ✅ IMPORTANT FIX
         from: req.body.From,
         to: req.body.To,
         status: CallStatus,
         duration: CallDuration || null,
-        direction: req.body.Direction || 'outbound',
-        ...(recordingUrl && { recordingUrl }),
+        direction: req.body.Direction || 'outbound'
       },
       { upsert: true, returnDocument: 'after' }
     );
@@ -149,7 +113,7 @@ exports.handleCallStatus = async (req, res) => {
   }
 };
 
-// 🎧 RECORDING CALLBACK (UNCHANGED)
+// 🎧 RECORDING CALLBACK (🔥 FINAL FIX)
 exports.handleRecordingStatus = async (req, res) => {
   try {
     console.log('🎧 RECORDING CALLBACK HIT');
@@ -173,8 +137,14 @@ exports.handleRecordingStatus = async (req, res) => {
       ? `${RecordingUrl}.mp3`
       : null;
 
+    // 🔥 UPDATE BOTH PARENT + CHILD
     const updated = await Call.findOneAndUpdate(
-      { callSid: CallSid },
+      {
+        $or: [
+          { callSid: CallSid },
+          { parentCallSid: CallSid }
+        ]
+      },
       {
         recordingUrl: finalUrl,
         recordingSid: RecordingSid,
@@ -194,7 +164,6 @@ exports.handleRecordingStatus = async (req, res) => {
     }
 
     console.log('✅ Recording saved:', finalUrl);
-    console.log('⏱ Duration saved from recording:', duration);
 
     res.sendStatus(200);
 
@@ -214,7 +183,7 @@ exports.getCalls = async (req, res) => {
   }
 };
 
-// 📞 INCOMING CALL (UNCHANGED)
+// 📞 INCOMING CALL
 exports.handleIncomingCall = async (req, res) => {
   try {
     const CallSid = req.body?.CallSid;
