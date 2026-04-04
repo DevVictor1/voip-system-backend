@@ -27,14 +27,13 @@ exports.getCallsByNumber = async (req, res) => {
 };
 
 // 📞 MAKE CALL
-// 🚫 DISABLED (NOW USING BROWSER CALLING)
 exports.makeCall = async (req, res) => {
   return res.json({
     message: 'Use browser softphone instead'
   });
 };
 
-// 📞 OUTBOUND TWIML ✅ FIXED
+// 📞 OUTBOUND TWIML (UNCHANGED)
 exports.handleOutboundCall = async (req, res) => {
   try {
     const { To } = req.body;
@@ -67,7 +66,7 @@ exports.handleOutboundCall = async (req, res) => {
   }
 };
 
-// 📊 STATUS UPDATE
+// 📊 STATUS UPDATE (🔥 FIXED ONLY HERE)
 exports.handleCallStatus = async (req, res) => {
   try {
     const { CallSid, CallStatus, CallDuration } = req.body;
@@ -77,13 +76,26 @@ exports.handleCallStatus = async (req, res) => {
 
     let recordingUrl = null;
 
-    // 🔥 ONLY RUN WHEN CALL COMPLETES
     if (CallStatus === 'completed') {
       try {
         const client = require('../config/twilio');
 
+        // 🔥 STEP 1: GET CHILD CALL
+        const childCalls = await client.calls.list({
+          parentCallSid: CallSid,
+          limit: 1,
+        });
+
+        let targetCallSid = CallSid;
+
+        if (childCalls.length > 0) {
+          targetCallSid = childCalls[0].sid;
+          console.log('🔁 Using child call SID:', targetCallSid);
+        }
+
+        // 🔥 STEP 2: FETCH RECORDING FROM CORRECT CALL
         const recordings = await client.recordings.list({
-          callSid: CallSid,
+          callSid: targetCallSid,
           limit: 1,
         });
 
@@ -92,6 +104,7 @@ exports.handleCallStatus = async (req, res) => {
 
           console.log('🎧 Recording fetched:', recordingUrl);
         }
+
       } catch (err) {
         console.log('⚠️ Recording fetch failed:', err.message);
       }
@@ -106,7 +119,7 @@ exports.handleCallStatus = async (req, res) => {
         status: CallStatus,
         duration: CallDuration || null,
         direction: req.body.Direction || 'outbound',
-        ...(recordingUrl && { recordingUrl }), // 🔥 SAFE ADD (won’t break anything)
+        ...(recordingUrl && { recordingUrl }),
       },
       { upsert: true, returnDocument: 'after' }
     );
@@ -136,7 +149,7 @@ exports.handleCallStatus = async (req, res) => {
   }
 };
 
-// 🎧 RECORDING CALLBACK
+// 🎧 RECORDING CALLBACK (UNCHANGED)
 exports.handleRecordingStatus = async (req, res) => {
   try {
     console.log('🎧 RECORDING CALLBACK HIT');
@@ -201,7 +214,7 @@ exports.getCalls = async (req, res) => {
   }
 };
 
-// 📞 INCOMING CALL
+// 📞 INCOMING CALL (UNCHANGED)
 exports.handleIncomingCall = async (req, res) => {
   try {
     const CallSid = req.body?.CallSid;
