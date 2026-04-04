@@ -50,11 +50,14 @@ exports.handleOutboundCall = async (req, res) => {
     record="record-from-answer"
     recordingStatusCallback="${process.env.BASE_URL}/api/calls/recording-status"
     recordingStatusCallbackMethod="POST"
-    statusCallback="${process.env.BASE_URL}/api/calls/call-status"
-    statusCallbackEvent="initiated ringing answered completed"
-    statusCallbackMethod="POST"
   >
-    <Number>${To}</Number>
+    <Number
+      statusCallback="${process.env.BASE_URL}/api/calls/call-status"
+      statusCallbackEvent="initiated ringing answered completed"
+      statusCallbackMethod="POST"
+    >
+      ${To}
+    </Number>
   </Dial>
 </Response>
 `);
@@ -68,6 +71,8 @@ exports.handleOutboundCall = async (req, res) => {
 exports.handleCallStatus = async (req, res) => {
   try {
     const { CallSid, CallStatus, CallDuration } = req.body;
+
+    console.log('🔥 CALL STATUS WEBHOOK HIT');
 
     console.log('📊 STATUS:', CallSid, CallStatus);
 
