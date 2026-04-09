@@ -1,4 +1,4 @@
-const twilio = require('twilio');
+﻿const twilio = require('twilio');
 
 exports.getToken = (req, res) => {
   try {
@@ -27,7 +27,7 @@ exports.getToken = (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ Token error:', err);
+    console.error('âŒ Token error:', err);
     res.status(500).json({ error: 'Failed to generate token' });
   }
 };

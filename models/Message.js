@@ -1,8 +1,8 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
   {
-    sid: String, // 🔥 Twilio Message SID
+    sid: String, // ðŸ”¥ Twilio Message SID
 
     from: String,
     to: String,
@@ -14,13 +14,13 @@ const messageSchema = new mongoose.Schema(
       default: false,
     },
 
-    // 📊 DELIVERY STATUS
+    // ðŸ“Š DELIVERY STATUS
     status: {
       type: String,
       default: 'queued', // queued | sent | delivered | undelivered | failed
     },
 
-    // ❗ ERROR CODE (NEW)
+    // â— ERROR CODE (NEW)
     errorCode: {
       type: String,
       default: null,

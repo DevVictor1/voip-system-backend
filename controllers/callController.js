@@ -1,4 +1,4 @@
-const Call = require('../models/Call');
+﻿const Call = require('../models/Call');
 const Contact = require('../models/Contact');
 
 // ADD THIS AT THE TOP (if not already)
@@ -7,7 +7,7 @@ const normalizePhone = (phone) => {
   return phone.toString().replace(/\D/g, '');
 };
 
-// 🔥 NEW: GET CALLS BY NUMBER
+// ðŸ”¥ NEW: GET CALLS BY NUMBER
 exports.getCallsByNumber = async (req, res) => {
   try {
     const phone = normalizePhone(req.params.phone);
@@ -21,24 +21,24 @@ exports.getCallsByNumber = async (req, res) => {
 
     res.json(calls);
   } catch (err) {
-    console.error('❌ Fetch calls by number error:', err);
+    console.error('âŒ Fetch calls by number error:', err);
     res.status(500).json({ error: 'Failed to fetch calls' });
   }
 };
 
-// 📞 MAKE CALL
+// ðŸ“ž MAKE CALL
 exports.makeCall = async (req, res) => {
   return res.json({
     message: 'Use browser softphone instead'
   });
 };
 
-// 📞 OUTBOUND TWIML
+// ðŸ“ž OUTBOUND TWIML
 exports.handleOutboundCall = async (req, res) => {
   try {
     const { To } = req.body;
 
-    console.log('📞 OUTBOUND TWIML TO:', To);
+    console.log('ðŸ“ž OUTBOUND TWIML TO:', To);
 
     res.set('Content-Type', 'text/xml');
 
@@ -61,24 +61,24 @@ exports.handleOutboundCall = async (req, res) => {
 </Response>
 `);
   } catch (err) {
-    console.error('❌ Outbound TwiML error:', err);
+    console.error('âŒ Outbound TwiML error:', err);
     res.sendStatus(500);
   }
 };
 
-// 📊 STATUS UPDATE (🔥 FIXED)
+// ðŸ“Š STATUS UPDATE (ðŸ”¥ FIXED)
 exports.handleCallStatus = async (req, res) => {
   try {
     const { CallSid, CallStatus, CallDuration, ParentCallSid } = req.body;
 
-    console.log('🔥 CALL STATUS WEBHOOK HIT');
-    console.log('📊 STATUS:', CallSid, CallStatus);
+    console.log('ðŸ”¥ CALL STATUS WEBHOOK HIT');
+    console.log('ðŸ“Š STATUS:', CallSid, CallStatus);
 
     const updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
         callSid: CallSid,
-        parentCallSid: ParentCallSid || null, // ✅ IMPORTANT FIX
+        parentCallSid: ParentCallSid || null, // âœ… IMPORTANT FIX
         from: req.body.From,
         to: req.body.To,
         status: CallStatus,
@@ -97,7 +97,7 @@ exports.handleCallStatus = async (req, res) => {
       if (
         ['completed', 'canceled', 'failed', 'busy', 'no-answer'].includes(CallStatus)
       ) {
-        console.log('🔴 CALL ENDED EVENT');
+        console.log('ðŸ”´ CALL ENDED EVENT');
 
         global.io.emit('callEnded', {
           callSid: CallSid,
@@ -108,16 +108,16 @@ exports.handleCallStatus = async (req, res) => {
     res.sendStatus(200);
 
   } catch (error) {
-    console.error('❌ Status error:', error);
+    console.error('âŒ Status error:', error);
     res.sendStatus(500);
   }
 };
 
-// 🎧 RECORDING CALLBACK (🔥 FINAL FIX)
+// ðŸŽ§ RECORDING CALLBACK (ðŸ”¥ FINAL FIX)
 exports.handleRecordingStatus = async (req, res) => {
   try {
-    console.log('🎧 RECORDING CALLBACK HIT');
-    console.log('📦 BODY:', req.body);
+    console.log('ðŸŽ§ RECORDING CALLBACK HIT');
+    console.log('ðŸ“¦ BODY:', req.body);
 
     const {
       CallSid,
@@ -137,7 +137,7 @@ exports.handleRecordingStatus = async (req, res) => {
       ? `${RecordingUrl}.mp3`
       : null;
 
-    // 🔥 TRY 1: EXACT MATCH (like inbound)
+    // ðŸ”¥ TRY 1: EXACT MATCH (like inbound)
     let updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
@@ -149,9 +149,9 @@ exports.handleRecordingStatus = async (req, res) => {
       { returnDocument: 'after' }
     );
 
-    // 🔥 TRY 2: FALLBACK (SMART FIX FOR OUTBOUND)
+    // ðŸ”¥ TRY 2: FALLBACK (SMART FIX FOR OUTBOUND)
 if (!updated) {
-  console.log('⚠️ No direct match, using LAST OUTBOUND CALL');
+  console.log('âš ï¸ No direct match, using LAST OUTBOUND CALL');
 
   updated = await Call.findOneAndUpdate(
     {
@@ -164,14 +164,14 @@ if (!updated) {
       status: 'completed',
     },
     {
-      sort: { createdAt: -1 }, // 🔥 THIS IS THE KEY
+      sort: { createdAt: -1 }, // ðŸ”¥ THIS IS THE KEY
       returnDocument: 'after'
     }
   );
 }
 
     if (global.io && updated) {
-      console.log('📡 EMITTING COMPLETED');
+      console.log('ðŸ“¡ EMITTING COMPLETED');
 
       global.io.emit('callStatus', {
         callSid: updated.callSid,
@@ -179,17 +179,17 @@ if (!updated) {
       });
     }
 
-    console.log('✅ Recording saved:', finalUrl);
+    console.log('âœ… Recording saved:', finalUrl);
 
     res.sendStatus(200);
 
   } catch (error) {
-    console.error('❌ Recording error:', error);
+    console.error('âŒ Recording error:', error);
     res.sendStatus(500);
   }
 };
 
-// 📊 GET CALL LOGS
+// ðŸ“Š GET CALL LOGS
 exports.getCalls = async (req, res) => {
   try {
     const calls = await Call.find().sort({ createdAt: -1 });
@@ -199,14 +199,14 @@ exports.getCalls = async (req, res) => {
   }
 };
 
-// 📞 INCOMING CALL
+// ðŸ“ž INCOMING CALL
 exports.handleIncomingCall = async (req, res) => {
   try {
     const CallSid = req.body?.CallSid;
     const From = req.body?.From;
     const To = req.body?.To;
 
-    console.log('📞 INBOUND CALL:', From, '→', To);
+    console.log('ðŸ“ž INBOUND CALL:', From, 'â†’', To);
 
     const normalizedFrom = normalizePhone(From);
 
@@ -264,14 +264,14 @@ exports.handleIncomingCall = async (req, res) => {
 `);
 
   } catch (err) {
-    console.error('❌ Incoming call error:', err);
+    console.error('âŒ Incoming call error:', err);
 
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Say>Error</Say></Response>`);
   }
 };
 
-// 🧹 CLEAR CALLS
+// ðŸ§¹ CLEAR CALLS
 exports.clearCalls = async (req, res) => {
   try {
     await Call.deleteMany({});

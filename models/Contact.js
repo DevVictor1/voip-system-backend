@@ -1,11 +1,11 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
 const contactSchema = new mongoose.Schema(
 {
   firstName: String,
   lastName: String,
 
-  // 🔥 MULTIPLE NUMBERS
+  // ðŸ”¥ MULTIPLE NUMBERS
   phones: [
     {
       label: String,
@@ -16,13 +16,13 @@ const contactSchema = new mongoose.Schema(
   dba: String,
   mid: String,
 
-  // 🔥 NEW (SAFE ADD)
+  // ðŸ”¥ NEW (SAFE ADD)
   assignedTo: {
     type: String, // later will be userId
     default: null,
   },
 
-  // 🔥 NEW (FOR SHARED INBOX)
+  // ðŸ”¥ NEW (FOR SHARED INBOX)
   isUnassigned: {
     type: Boolean,
     default: true,

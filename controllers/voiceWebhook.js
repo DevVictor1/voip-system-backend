@@ -1,5 +1,5 @@
-exports.outgoingCall = (req, res) => {
-  console.log('🔥 OUTGOING CALLED');
+﻿exports.outgoingCall = (req, res) => {
+  console.log('ðŸ”¥ OUTGOING CALLED');
 
   res.writeHead(200, { 'Content-Type': 'text/xml' });
 
@@ -12,7 +12,7 @@ exports.outgoingCall = (req, res) => {
 };
 
 exports.incomingCall = (req, res) => {
-  console.log('✅ INCOMING CALL HIT');
+  console.log('âœ… INCOMING CALL HIT');
 
   res.writeHead(200, { 'Content-Type': 'text/xml' });
 

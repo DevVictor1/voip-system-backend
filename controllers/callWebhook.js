@@ -1,18 +1,18 @@
-const Call = require('../models/Call');
+﻿const Call = require('../models/Call');
 
-// ✅ STATUS PRIORITY (VERY IMPORTANT)
+// âœ… STATUS PRIORITY (VERY IMPORTANT)
 const statusPriority = {
   initiated: 1,
   ringing: 2,
-  answered: 3,   // ✅ Twilio uses "answered"
+  answered: 3,   // âœ… Twilio uses "answered"
   completed: 4,
 };
 
-// ✅ HANDLE CALL STATUS (TWILIO WEBHOOK - FIXED)
+// âœ… HANDLE CALL STATUS (TWILIO WEBHOOK - FIXED)
 const handleCallStatus = (req, res) => {
-  console.log('🔥 WEBHOOK HIT');
+  console.log('ðŸ”¥ WEBHOOK HIT');
 
-  // ✅ ALWAYS RESPOND IMMEDIATELY
+  // âœ… ALWAYS RESPOND IMMEDIATELY
   res.status(200).send('OK');
 
   try {
@@ -24,7 +24,7 @@ const handleCallStatus = (req, res) => {
     const CallSid = body.CallSid;
 
     if (!CallSid) {
-      console.log('❌ Missing CallSid');
+      console.log('âŒ Missing CallSid');
       return;
     }
 
@@ -37,9 +37,9 @@ const handleCallStatus = (req, res) => {
       direction: body.Direction,
     };
 
-    console.log('📡 Status:', body.CallStatus);
+    console.log('ðŸ“¡ Status:', body.CallStatus);
 
-    // ✅ FIRE AND FORGET (NO AWAIT = NO CRASH)
+    // âœ… FIRE AND FORGET (NO AWAIT = NO CRASH)
     Call.findOneAndUpdate(
       { callSid: CallSid },
       updateData,
@@ -49,40 +49,40 @@ const handleCallStatus = (req, res) => {
       }
     )
       .then(() => {
-        console.log('✅ Updated:', body.CallStatus);
+        console.log('âœ… Updated:', body.CallStatus);
       })
       .catch((err) => {
-        console.error('❌ DB Error:', err);
+        console.error('âŒ DB Error:', err);
       });
 
   } catch (error) {
-    console.error('❌ Fatal Error:', error);
+    console.error('âŒ Fatal Error:', error);
   }
 };
 
-// ✅ GET ALL CALL LOGS
+// âœ… GET ALL CALL LOGS
 const getCalls = async (req, res) => {
   try {
     const calls = await Call.find().sort({ createdAt: -1 });
     res.json(calls);
   } catch (error) {
-    console.error('❌ Fetch error:', error);
+    console.error('âŒ Fetch error:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// 🧹 CLEAR ALL CALL LOGS
+// ðŸ§¹ CLEAR ALL CALL LOGS
 const clearCalls = async (req, res) => {
   try {
     await Call.deleteMany({});
-    console.log('🧹 Cleared all logs');
+    console.log('ðŸ§¹ Cleared all logs');
 
     res.json({
       success: true,
       message: 'All call logs cleared',
     });
   } catch (error) {
-    console.error('❌ Clear error:', error);
+    console.error('âŒ Clear error:', error);
     res.status(500).json({ error: error.message });
   }
 };

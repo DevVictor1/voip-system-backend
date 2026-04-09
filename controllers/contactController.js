@@ -1,15 +1,15 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const csv = require('csv-parser');
 const xlsx = require('xlsx');
 const Contact = require('../models/Contact');
 
-// 🔥 NORMALIZE PHONE
+// ðŸ”¥ NORMALIZE PHONE
 const normalizePhone = (phone) => {
   if (!phone) return '';
   return phone.toString().replace(/\D/g, '');
 };
 
-// 🔥 AUTO DETECT DBA
+// ðŸ”¥ AUTO DETECT DBA
 const getDBA = (row) => {
   const keys = Object.keys(row);
 
@@ -23,7 +23,7 @@ const getDBA = (row) => {
   return foundKey ? row[foundKey] : '';
 };
 
-// 🔥 AUTO DETECT MID (NEW)
+// ðŸ”¥ AUTO DETECT MID (NEW)
 const getMID = (row) => {
   const keys = Object.keys(row);
 
@@ -35,7 +35,7 @@ const getMID = (row) => {
   return foundKey ? String(row[foundKey]).trim() : '';
 };
 
-// 📥 IMPORT CONTACTS
+// ðŸ“¥ IMPORT CONTACTS
 exports.importContacts = async (req, res) => {
   try {
     if (!req.file) {
@@ -47,12 +47,12 @@ exports.importContacts = async (req, res) => {
 
     let results = [];
 
-    // ✅ XLSX
+    // âœ… XLSX
     if (ext === 'xlsx' || ext === 'xls') {
       const workbook = xlsx.readFile(filePath);
 
       const mainSheetName = workbook.SheetNames[0];
-      console.log('📄 Using sheet:', mainSheetName);
+      console.log('ðŸ“„ Using sheet:', mainSheetName);
 
       const sheet = workbook.Sheets[mainSheetName];
       const data = xlsx.utils.sheet_to_json(sheet);
@@ -63,7 +63,7 @@ exports.importContacts = async (req, res) => {
 
         dba: row['DBA Name'] || getDBA(row),
 
-        // 🔥 NEW MID
+        // ðŸ”¥ NEW MID
         mid: getMID(row),
 
         phones: [
@@ -79,7 +79,7 @@ exports.importContacts = async (req, res) => {
       }));
 
     } else {
-      // ✅ CSV
+      // âœ… CSV
       await new Promise((resolve) => {
         fs.createReadStream(filePath)
           .pipe(csv())
@@ -90,7 +90,7 @@ exports.importContacts = async (req, res) => {
 
               dba: getDBA(row),
 
-              // 🔥 NEW MID
+              // ðŸ”¥ NEW MID
               mid: getMID(row),
 
               phones: [
@@ -109,7 +109,7 @@ exports.importContacts = async (req, res) => {
       });
     }
 
-    // ✅ FILTER VALID
+    // âœ… FILTER VALID
     const valid = results.filter(
       (c) => c.firstName && c.phones.length > 0
     );
@@ -125,19 +125,19 @@ exports.importContacts = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ IMPORT ERROR:', error);
+    console.error('âŒ IMPORT ERROR:', error);
     res.status(500).json({ error: 'Failed to import contacts' });
   }
 };
 
-// 📚 GET (🔥 WITH SHARED INBOX LOGIC)
+// ðŸ“š GET (ðŸ”¥ WITH SHARED INBOX LOGIC)
 exports.getContacts = async (req, res) => {
   try {
     const { role = 'admin', userId = null } = req.query;
 
     let filter = {};
 
-    // 🔥 AGENT: only see assigned + unassigned
+    // ðŸ”¥ AGENT: only see assigned + unassigned
     if (role === 'agent') {
       filter = {
         $or: [
@@ -147,19 +147,19 @@ exports.getContacts = async (req, res) => {
       };
     }
 
-    // 🔥 ADMIN: sees everything (no filter)
+    // ðŸ”¥ ADMIN: sees everything (no filter)
 
     const contacts = await Contact.find(filter).sort({ createdAt: -1 });
 
     res.json(contacts);
 
   } catch (error) {
-    console.error('❌ FETCH CONTACTS ERROR:', error);
+    console.error('âŒ FETCH CONTACTS ERROR:', error);
     res.status(500).json({ error: 'Failed to fetch contacts' });
   }
 };
 
-// 👤 ASSIGN CONTACT
+// ðŸ‘¤ ASSIGN CONTACT
 exports.assignContact = async (req, res) => {
   try {
     const { id } = req.params;
@@ -177,30 +177,30 @@ exports.assignContact = async (req, res) => {
     res.json(updated);
 
   } catch (err) {
-    console.error('❌ Assign error:', err);
+    console.error('âŒ Assign error:', err);
     res.status(500).json({ error: 'Failed to assign contact' });
   }
 };
 
-// 🗑 DELETE
+// ðŸ—‘ DELETE
 exports.deleteContact = async (req, res) => {
   try {
     const { id } = req.params;
     await Contact.findByIdAndDelete(id);
     res.json({ success: true });
   } catch (error) {
-    console.error('❌ Delete error:', error);
+    console.error('âŒ Delete error:', error);
     res.status(500).json({ error: 'Failed to delete contact' });
   }
 };
 
-// 🧹 CLEAR
+// ðŸ§¹ CLEAR
 exports.clearContacts = async (req, res) => {
   try {
     await Contact.deleteMany({});
     res.json({ success: true, message: 'All contacts deleted' });
   } catch (error) {
-    console.error('❌ Clear contacts error:', error);
+    console.error('âŒ Clear contacts error:', error);
     res.status(500).json({ error: 'Failed to clear contacts' });
   }
 };

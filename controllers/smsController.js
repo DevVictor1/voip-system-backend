@@ -1,14 +1,14 @@
-const Message = require('../models/Message');
+﻿const Message = require('../models/Message');
 const Contact = require('../models/Contact');
 const client = require('../config/twilio');
 
-// 🔥 NORMALIZE (SAFE)
+// ðŸ”¥ NORMALIZE (SAFE)
 const normalize = (num) => {
   if (!num) return '';
   return num.replace(/\D/g, '').slice(-10);
 };
 
-// 🔍 FIND CONTACT
+// ðŸ” FIND CONTACT
 const findContactByPhone = async (phone) => {
   const normalized = normalize(phone);
 
@@ -17,18 +17,18 @@ const findContactByPhone = async (phone) => {
   });
 };
 
-// 📩 RECEIVE SMS
+// ðŸ“© RECEIVE SMS
 exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
 
-    console.log('📩 INCOMING SMS:', From, Body);
+    console.log('ðŸ“© INCOMING SMS:', From, Body);
 
     const message = await Message.create({
       from: normalize(From),
       to: normalize(To),
-      fromFull: From,     // 🔥 KEEP ORIGINAL
-      toFull: To,         // 🔥 KEEP ORIGINAL
+      fromFull: From,     // ðŸ”¥ KEEP ORIGINAL
+      toFull: To,         // ðŸ”¥ KEEP ORIGINAL
       body: Body,
       direction: 'inbound',
       read: false,
@@ -41,12 +41,12 @@ exports.receiveSMS = async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error('❌ RECEIVE ERROR:', error);
+    console.error('âŒ RECEIVE ERROR:', error);
     res.sendStatus(500);
   }
 };
 
-// 📤 SEND SMS
+// ðŸ“¤ SEND SMS
 exports.sendSMS = async (req, res) => {
   try {
     const { to, body, message } = req.body;
@@ -84,12 +84,12 @@ exports.sendSMS = async (req, res) => {
     res.json(saved);
 
   } catch (error) {
-    console.error('❌ SEND ERROR:', error);
+    console.error('âŒ SEND ERROR:', error);
     res.status(500).json({ error: 'Send failed' });
   }
 };
 
-// 📊 STATUS CALLBACK
+// ðŸ“Š STATUS CALLBACK
 exports.smsStatusCallback = async (req, res) => {
   try {
     const { MessageSid, MessageStatus } = req.body;
@@ -101,12 +101,12 @@ exports.smsStatusCallback = async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('❌ STATUS ERROR:', err);
+    console.error('âŒ STATUS ERROR:', err);
     res.sendStatus(500);
   }
 };
 
-// 📚 GET CONVERSATIONS
+// ðŸ“š GET CONVERSATIONS
 exports.getConversations = async (req, res) => {
   try {
     const messages = await Message.find().sort({ createdAt: -1 });
@@ -142,12 +142,12 @@ exports.getConversations = async (req, res) => {
     res.json(Object.values(conversations));
 
   } catch (error) {
-    console.error('❌ Conversations error:', error);
+    console.error('âŒ Conversations error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// 💬 GET MESSAGES
+// ðŸ’¬ GET MESSAGES
 exports.getMessages = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
@@ -162,12 +162,12 @@ exports.getMessages = async (req, res) => {
     res.json(messages);
 
   } catch (error) {
-    console.error('❌ Messages error:', error);
+    console.error('âŒ Messages error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// ✅ MARK AS READ
+// âœ… MARK AS READ
 exports.markAsRead = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
@@ -183,12 +183,12 @@ exports.markAsRead = async (req, res) => {
     res.json({ success: true });
 
   } catch (error) {
-    console.error('❌ Read error:', error);
+    console.error('âŒ Read error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// 🧹 CLEAR
+// ðŸ§¹ CLEAR
 exports.clearMessages = async (req, res) => {
   try {
     await Message.deleteMany({});
