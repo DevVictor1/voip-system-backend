@@ -3,6 +3,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const axios = require('axios'); // ✅ ADDED
 
 const connectDB = require('./config/db');
 const callRoutes = require('./routes/callRoutes');
@@ -12,7 +13,7 @@ const voiceRoutes = require('./routes/voiceRoutes');
 
 const app = express();
 
-// âœ… HARD CORS FIX (WORKS 100%)
+// ✅ HARD CORS FIX
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "*");
@@ -25,31 +26,57 @@ app.use((req, res, next) => {
   next();
 });
 
-// ðŸ”¥ðŸ”¥ NUCLEAR DEBUG LOGGER (ADD THIS)
+// 🔥 DEBUG LOGGER
 app.use((req, res, next) => {
-  console.log("ðŸ‘‰ Incoming Request:", req.method, req.url);
+  console.log("👉 Incoming Request:", req.method, req.url);
   next();
 });
 
-// âœ… MIDDLEWARE
+// ✅ MIDDLEWARE
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// âœ… ROUTES
+// ✅ ROUTES
 app.use('/api/calls', callRoutes);
 app.use('/api/sms', smsRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/voice', voiceRoutes);
 
-// âœ… TEST ROUTE
+// 🔥 ✅ NEW RECORDING PROXY ROUTE (THIS FIXES YOUR ISSUE)
+app.get('/api/recordings/:sid', async (req, res) => {
+  try {
+    const { sid } = req.params;
+
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Recordings/${sid}.mp3`;
+
+    const response = await axios({
+      method: 'GET',
+      url,
+      responseType: 'stream',
+      auth: {
+        username: process.env.TWILIO_ACCOUNT_SID,
+        password: process.env.TWILIO_AUTH_TOKEN,
+      },
+    });
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    response.data.pipe(res);
+
+  } catch (err) {
+    console.error('❌ Recording fetch error:', err.message);
+    res.status(500).send('Failed to fetch recording');
+  }
+});
+
+// ✅ TEST ROUTE
 app.get('/', (req, res) => {
   res.send('VoIP Backend Running...');
 });
 
-// âœ… CREATE HTTP SERVER
+// ✅ CREATE HTTP SERVER
 const server = http.createServer(app);
 
-// âœ… SOCKET.IO
+// ✅ SOCKET.IO
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -61,27 +88,27 @@ const io = new Server(server, {
 global.io = io;
 
 io.on('connection', (socket) => {
-  console.log('âš¡ Connected:', socket.id);
+  console.log('⚡ Connected:', socket.id);
 
   socket.on('disconnect', () => {
-    console.log('âŒ Disconnected:', socket.id);
+    console.log('❌ Disconnected:', socket.id);
   });
 });
 
-// âœ… PORT
+// ✅ PORT
 const PORT = process.env.PORT || 5000;
 
-// âœ… START SERVER
+// ✅ START SERVER
 const startServer = async () => {
   try {
     await connectDB();
-    console.log("âœ… DB connected");
+    console.log("✅ DB connected");
   } catch (err) {
-    console.log("âš ï¸ DB failed, but continuing...");
+    console.log("⚠️ DB failed, but continuing...");
   }
 
   server.listen(PORT, () => {
-    console.log(`ðŸš€ Server running on ${PORT}`);
+    console.log(`🚀 Server running on ${PORT}`);
   });
 };
 

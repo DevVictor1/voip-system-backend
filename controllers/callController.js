@@ -113,11 +113,11 @@ exports.handleCallStatus = async (req, res) => {
   }
 };
 
-// ðŸŽ§ RECORDING CALLBACK (ðŸ”¥ FINAL FIX)
+// 🎧 RECORDING CALLBACK (FINAL FIX - SAFE)
 exports.handleRecordingStatus = async (req, res) => {
   try {
-    console.log('ðŸŽ§ RECORDING CALLBACK HIT');
-    console.log('ðŸ“¦ BODY:', req.body);
+    console.log('🎧 RECORDING CALLBACK HIT');
+    console.log('📦 BODY:', req.body);
 
     const {
       CallSid,
@@ -137,41 +137,41 @@ exports.handleRecordingStatus = async (req, res) => {
       ? `${RecordingUrl}.mp3`
       : null;
 
-    // ðŸ”¥ TRY 1: EXACT MATCH (like inbound)
+    // 🔥 TRY 1: EXACT MATCH
     let updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
-        recordingUrl: finalUrl,
-        recordingSid: RecordingSid,
+        recordingSid: RecordingSid,   // ✅ correct
+        recordingUrl: finalUrl,       // optional (not used in frontend)
         duration: duration,
         status: 'completed',
       },
       { returnDocument: 'after' }
     );
 
-    // ðŸ”¥ TRY 2: FALLBACK (SMART FIX FOR OUTBOUND)
-if (!updated) {
-  console.log('âš ï¸ No direct match, using LAST OUTBOUND CALL');
+    // 🔥 TRY 2: FALLBACK (OUTBOUND FIX)
+    if (!updated) {
+      console.log('⚠️ No direct match, using LAST OUTBOUND CALL');
 
-  updated = await Call.findOneAndUpdate(
-    {
-      direction: { $regex: 'outbound' }
-    },
-    {
-      recordingUrl: finalUrl,
-      recordingSid: RecordingSid,
-      duration: duration,
-      status: 'completed',
-    },
-    {
-      sort: { createdAt: -1 }, // ðŸ”¥ THIS IS THE KEY
-      returnDocument: 'after'
+      updated = await Call.findOneAndUpdate(
+        {
+          direction: { $regex: 'outbound' }
+        },
+        {
+          recordingSid: RecordingSid,   // ✅ important
+          recordingUrl: finalUrl,       // keep but not used
+          duration: duration,
+          status: 'completed',
+        },
+        {
+          sort: { createdAt: -1 },
+          returnDocument: 'after'
+        }
+      );
     }
-  );
-}
 
     if (global.io && updated) {
-      console.log('ðŸ“¡ EMITTING COMPLETED');
+      console.log('📡 EMITTING COMPLETED');
 
       global.io.emit('callStatus', {
         callSid: updated.callSid,
@@ -179,12 +179,12 @@ if (!updated) {
       });
     }
 
-    console.log('âœ… Recording saved:', finalUrl);
+    console.log('✅ Recording saved SID:', RecordingSid);
 
     res.sendStatus(200);
 
   } catch (error) {
-    console.error('âŒ Recording error:', error);
+    console.error('❌ Recording error:', error);
     res.sendStatus(500);
   }
 };
