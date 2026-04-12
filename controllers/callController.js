@@ -27,7 +27,7 @@ exports.handleIVR = (req, res) => {
       record: 'record-from-ringing-dual',
 
       // 🔥 KEEP CALLBACK
-      recordingStatusCallback: `${process.env.BASE_URL}/api/calls/recording-status`,
+      recordingStatusCallback: `https://voip-system-backend.onrender.com/api/calls/recording-status`,
       recordingStatusCallbackMethod: 'POST',
 
       // 🔥 ENSURE CALLBACK FIRES
