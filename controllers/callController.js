@@ -23,27 +23,23 @@ exports.handleIVR = (req, res) => {
     const dial = twiml.dial({
       callerId: process.env.TWILIO_PHONE_NUMBER,
 
-      // 🔥 FINAL WORKING MODE
+      // ✅ FIX FOR INCOMING RECORDING
       record: 'record-from-ringing-dual',
 
-      // 🔥 KEEP CALLBACK
-      recordingStatusCallback: encodeURI(
-  `${process.env.BASE_URL?.replace(/\/$/, '')}/api/calls/recording-status`
-),
+      // ✅ HARDCODE (WORKING VERSION)
+      recordingStatusCallback: 'https://voip-system-backend.onrender.com/api/calls/recording-status',
       recordingStatusCallbackMethod: 'POST',
-
-      // 🔥 ENSURE CALLBACK FIRES
       recordingStatusCallbackEvent: 'completed',
     });
 
     dial.client('web_user');
   } 
   else {
-  const BASE = process.env.BASE_URL?.replace(/\/$/, '');
+    twiml.say('Invalid option');
 
-  twiml.say('Invalid option');
-  twiml.redirect(`${BASE}/api/calls/incoming-call`);
-}
+    // ✅ SAFE FIX (ABSOLUTE URL)
+    twiml.redirect('https://voip-system-backend.onrender.com/api/calls/incoming-call');
+  }
 
   res.type('text/xml');
   res.send(twiml.toString());
@@ -95,11 +91,11 @@ exports.handleOutboundCall = async (req, res) => {
   <Dial
     callerId="${process.env.TWILIO_PHONE_NUMBER}"
     record="record-from-answer"
-    recordingStatusCallback="${process.env.BASE_URL?.replace(/\/$/, '')}/api/calls/recording-status"
+    recordingStatusCallback="${process.env.BASE_URL?.trim()}/api/calls/recording-status"
     recordingStatusCallbackMethod="POST"
   >
     <Number
-      statusCallback="${process.env.BASE_URL?.replace(/\/$/, '')}/api/calls/call-status"
+      statusCallback="${process.env.BASE_URL?.trim()}/api/calls/call-status"
       statusCallbackEvent="initiated ringing answered completed"
       statusCallbackMethod="POST"
     >
@@ -303,20 +299,18 @@ exports.handleIncomingCall = async (req, res) => {
 
     const twiml = new VoiceResponse();
 
-    const BASE = process.env.BASE_URL?.replace(/\/$/, '');
+    const gather = twiml.gather({
+      numDigits: 1,
+      action: '/api/calls/ivr', // ✅ FIXED
+      method: 'POST'
+    });
 
-const gather = twiml.gather({
-  numDigits: 1,
-  action: `${BASE}/api/calls/ivr`, // ✅ FIXED
-  method: 'POST'
-});
+    gather.say(
+      { voice: 'alice' },
+      'Welcome. Press 1 for Sales. Press 2 for Support.'
+    );
 
-gather.say(
-  { voice: 'alice' },
-  'Welcome. Press 1 for Sales. Press 2 for Support.'
-);
-
-twiml.redirect(`${BASE}/api/calls/incoming-call`); // ✅ FIXED
+    twiml.redirect('/api/calls/incoming-call'); // ✅ FIXED
 
     res.type('text/xml');
     res.send(twiml.toString());
