@@ -152,12 +152,16 @@ exports.handleCallStatus = async (req, res) => {
 // ==========================
 exports.handleRecordingStatus = async (req, res) => {
   try {
+    console.log('🎧 RECORDING CALLBACK HIT');
+    console.log('📦 BODY:', req.body);
+
     const {
       CallSid,
       RecordingUrl,
       RecordingSid,
       RecordingStatus,
-      RecordingDuration
+      RecordingDuration,
+      ParentCallSid
     } = req.body;
 
     if (RecordingStatus !== 'completed') {
@@ -170,6 +174,7 @@ exports.handleRecordingStatus = async (req, res) => {
       ? `${RecordingUrl}.mp3`
       : null;
 
+    // ✅ TRY 1: DIRECT MATCH (OUTBOUND + SIMPLE CALLS)
     let updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
@@ -181,7 +186,26 @@ exports.handleRecordingStatus = async (req, res) => {
       { returnDocument: 'after' }
     );
 
+    // 🔥 TRY 2: IVR FIX (MATCH PARENT CALL)
+    if (!updated && ParentCallSid) {
+      console.log('🔁 Trying ParentCallSid match');
+
+      updated = await Call.findOneAndUpdate(
+        { callSid: ParentCallSid },
+        {
+          recordingSid: RecordingSid,
+          recordingUrl: finalUrl,
+          duration: duration,
+          status: 'completed',
+        },
+        { returnDocument: 'after' }
+      );
+    }
+
+    // 🔥 TRY 3: FALLBACK (LAST OUTBOUND — KEEP YOUR ORIGINAL LOGIC)
     if (!updated) {
+      console.log('⚠️ Fallback to last outbound');
+
       updated = await Call.findOneAndUpdate(
         { direction: { $regex: 'outbound' } },
         {
@@ -198,16 +222,20 @@ exports.handleRecordingStatus = async (req, res) => {
     }
 
     if (global.io && updated) {
+      console.log('📡 EMITTING COMPLETED');
+
       global.io.emit('callStatus', {
         callSid: updated.callSid,
         status: 'completed',
       });
     }
 
+    console.log('✅ Recording saved:', RecordingSid);
+
     res.sendStatus(200);
 
   } catch (error) {
-    console.error('Recording error:', error);
+    console.error('❌ Recording error:', error);
     res.sendStatus(500);
   }
 };
