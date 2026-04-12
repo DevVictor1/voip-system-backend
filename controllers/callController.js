@@ -11,22 +11,45 @@ const normalizePhone = (phone) => {
 // ==========================
 // 🔥 IVR HANDLER (FIXED)
 // ==========================
-exports.handleIVR = (req, res) => {
+exports.handleIVR = async (req, res) => {
   const twiml = new VoiceResponse();
   const digit = req.body.Digits;
 
   console.log('IVR INPUT:', digit);
 
   if (digit === '1' || digit === '2') {
+
+    // 🔥 GET CALL INFO
+    const CallSid = req.body.CallSid;
+    const From = req.body.From;
+    const To = req.body.To;
+
+    const contact = await Contact.findOne({
+      'phones.number': { $regex: From.slice(-10) }
+    });
+
+    // 🔥 EMIT POPUP HERE (AFTER IVR SELECTION)
+    if (global.io) {
+      global.io.emit('incomingCall', {
+        callSid: CallSid,
+        from: From,
+        to: To,
+        contact: contact
+          ? {
+              firstName: contact.firstName,
+              lastName: contact.lastName,
+              dba: contact.dba,
+              mid: contact.mid || ''
+            }
+          : null
+      });
+    }
+
     twiml.say('Connecting you now');
 
     const dial = twiml.dial({
       callerId: process.env.TWILIO_PHONE_NUMBER,
-
-      // ✅ FIX FOR INCOMING RECORDING
       record: 'record-from-ringing-dual',
-
-      // ✅ HARDCODE (WORKING VERSION)
       recordingStatusCallback: 'https://voip-system-backend.onrender.com/api/calls/recording-status',
       recordingStatusCallbackMethod: 'POST',
       recordingStatusCallbackEvent: 'completed',
@@ -36,8 +59,6 @@ exports.handleIVR = (req, res) => {
   } 
   else {
     twiml.say('Invalid option');
-
-    // ✅ SAFE FIX (ABSOLUTE URL)
     twiml.redirect('https://voip-system-backend.onrender.com/api/calls/incoming-call');
   }
 
@@ -276,26 +297,6 @@ exports.handleIncomingCall = async (req, res) => {
       { upsert: true, returnDocument: 'after' }
     );
 
-    if (global.io) {
-      global.io.emit('incomingCall', {
-        callSid: CallSid,
-        from: From,
-        to: To,
-        contact: contact
-          ? {
-              firstName: contact.firstName,
-              lastName: contact.lastName,
-              dba: contact.dba,
-              mid: contact.mid || ''
-            }
-          : null
-      });
-
-      global.io.emit('callStatus', {
-        callSid: CallSid,
-        status: 'ringing',
-      });
-    }
 
     const twiml = new VoiceResponse();
 
