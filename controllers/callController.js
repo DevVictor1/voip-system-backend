@@ -9,7 +9,7 @@ const normalizePhone = (phone) => {
 };
 
 // ==========================
-// 🔥 NEW: IVR HANDLER
+// 🔥 IVR HANDLER (FIXED)
 // ==========================
 exports.handleIVR = (req, res) => {
   const twiml = new VoiceResponse();
@@ -27,7 +27,7 @@ exports.handleIVR = (req, res) => {
   } 
   else {
     twiml.say('Invalid option');
-    twiml.redirect(`${process.env.BASE_URL}/api/calls/incoming-call`);
+    twiml.redirect('/api/calls/incoming-call'); // ✅ FIXED
   }
 
   res.type('text/xml');
@@ -209,7 +209,7 @@ exports.handleRecordingStatus = async (req, res) => {
 };
 
 // ==========================
-// 📞 INCOMING CALL (WITH IVR)
+// 📞 INCOMING CALL (FINAL FIX)
 // ==========================
 exports.handleIncomingCall = async (req, res) => {
   try {
@@ -262,7 +262,7 @@ exports.handleIncomingCall = async (req, res) => {
 
     const gather = twiml.gather({
       numDigits: 1,
-      action: `${process.env.BASE_URL}/api/calls/ivr`,
+      action: '/api/calls/ivr', // ✅ FIXED
       method: 'POST'
     });
 
@@ -271,7 +271,7 @@ exports.handleIncomingCall = async (req, res) => {
       'Welcome. Press 1 for Sales. Press 2 for Support.'
     );
 
-    twiml.redirect(`${process.env.BASE_URL}/api/calls/incoming-call`);
+    twiml.redirect('/api/calls/incoming-call'); // ✅ FIXED
 
     res.type('text/xml');
     res.send(twiml.toString());
