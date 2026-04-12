@@ -1,13 +1,42 @@
 ﻿const Call = require('../models/Call');
 const Contact = require('../models/Contact');
+const VoiceResponse = require('twilio').twiml.VoiceResponse;
 
-// ADD THIS AT THE TOP (if not already)
+// NORMALIZE
 const normalizePhone = (phone) => {
   if (!phone) return '';
   return phone.toString().replace(/\D/g, '');
 };
 
-// ðŸ”¥ NEW: GET CALLS BY NUMBER
+// ==========================
+// 🔥 NEW: IVR HANDLER
+// ==========================
+exports.handleIVR = (req, res) => {
+  const twiml = new VoiceResponse();
+  const digit = req.body.Digits;
+
+  console.log('IVR INPUT:', digit);
+
+  if (digit === '1') {
+    twiml.say('Connecting you now');
+    twiml.dial().client('web_user');
+  } 
+  else if (digit === '2') {
+    twiml.say('Connecting you now');
+    twiml.dial().client('web_user');
+  } 
+  else {
+    twiml.say('Invalid option');
+    twiml.redirect(`${process.env.BASE_URL}/api/calls/incoming-call`);
+  }
+
+  res.type('text/xml');
+  res.send(twiml.toString());
+};
+
+// ==========================
+// 🔥 GET CALLS BY NUMBER
+// ==========================
 exports.getCallsByNumber = async (req, res) => {
   try {
     const phone = normalizePhone(req.params.phone);
@@ -21,24 +50,28 @@ exports.getCallsByNumber = async (req, res) => {
 
     res.json(calls);
   } catch (err) {
-    console.error('âŒ Fetch calls by number error:', err);
+    console.error('Fetch calls by number error:', err);
     res.status(500).json({ error: 'Failed to fetch calls' });
   }
 };
 
-// ðŸ“ž MAKE CALL
+// ==========================
+// 📞 MAKE CALL
+// ==========================
 exports.makeCall = async (req, res) => {
   return res.json({
     message: 'Use browser softphone instead'
   });
 };
 
-// ðŸ“ž OUTBOUND TWIML
+// ==========================
+// 📞 OUTBOUND TWIML
+// ==========================
 exports.handleOutboundCall = async (req, res) => {
   try {
     const { To } = req.body;
 
-    console.log('ðŸ“ž OUTBOUND TWIML TO:', To);
+    console.log('OUTBOUND TWIML TO:', To);
 
     res.set('Content-Type', 'text/xml');
 
@@ -61,24 +94,25 @@ exports.handleOutboundCall = async (req, res) => {
 </Response>
 `);
   } catch (err) {
-    console.error('âŒ Outbound TwiML error:', err);
+    console.error('Outbound TwiML error:', err);
     res.sendStatus(500);
   }
 };
 
-// ðŸ“Š STATUS UPDATE (ðŸ”¥ FIXED)
+// ==========================
+// 📊 STATUS UPDATE
+// ==========================
 exports.handleCallStatus = async (req, res) => {
   try {
     const { CallSid, CallStatus, CallDuration, ParentCallSid } = req.body;
 
-    console.log('ðŸ”¥ CALL STATUS WEBHOOK HIT');
-    console.log('ðŸ“Š STATUS:', CallSid, CallStatus);
+    console.log('CALL STATUS:', CallSid, CallStatus);
 
     const updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
         callSid: CallSid,
-        parentCallSid: ParentCallSid || null, // âœ… IMPORTANT FIX
+        parentCallSid: ParentCallSid || null,
         from: req.body.From,
         to: req.body.To,
         status: CallStatus,
@@ -97,28 +131,23 @@ exports.handleCallStatus = async (req, res) => {
       if (
         ['completed', 'canceled', 'failed', 'busy', 'no-answer'].includes(CallStatus)
       ) {
-        console.log('ðŸ”´ CALL ENDED EVENT');
-
-        global.io.emit('callEnded', {
-          callSid: CallSid,
-        });
+        global.io.emit('callEnded', { callSid: CallSid });
       }
     }
 
     res.sendStatus(200);
 
   } catch (error) {
-    console.error('âŒ Status error:', error);
+    console.error('Status error:', error);
     res.sendStatus(500);
   }
 };
 
-// 🎧 RECORDING CALLBACK (FINAL FIX - SAFE)
+// ==========================
+// 🎧 RECORDING CALLBACK
+// ==========================
 exports.handleRecordingStatus = async (req, res) => {
   try {
-    console.log('🎧 RECORDING CALLBACK HIT');
-    console.log('📦 BODY:', req.body);
-
     const {
       CallSid,
       RecordingUrl,
@@ -137,29 +166,23 @@ exports.handleRecordingStatus = async (req, res) => {
       ? `${RecordingUrl}.mp3`
       : null;
 
-    // 🔥 TRY 1: EXACT MATCH
     let updated = await Call.findOneAndUpdate(
       { callSid: CallSid },
       {
-        recordingSid: RecordingSid,   // ✅ correct
-        recordingUrl: finalUrl,       // optional (not used in frontend)
+        recordingSid: RecordingSid,
+        recordingUrl: finalUrl,
         duration: duration,
         status: 'completed',
       },
       { returnDocument: 'after' }
     );
 
-    // 🔥 TRY 2: FALLBACK (OUTBOUND FIX)
     if (!updated) {
-      console.log('⚠️ No direct match, using LAST OUTBOUND CALL');
-
       updated = await Call.findOneAndUpdate(
+        { direction: { $regex: 'outbound' } },
         {
-          direction: { $regex: 'outbound' }
-        },
-        {
-          recordingSid: RecordingSid,   // ✅ important
-          recordingUrl: finalUrl,       // keep but not used
+          recordingSid: RecordingSid,
+          recordingUrl: finalUrl,
           duration: duration,
           status: 'completed',
         },
@@ -171,42 +194,30 @@ exports.handleRecordingStatus = async (req, res) => {
     }
 
     if (global.io && updated) {
-      console.log('📡 EMITTING COMPLETED');
-
       global.io.emit('callStatus', {
         callSid: updated.callSid,
         status: 'completed',
       });
     }
 
-    console.log('✅ Recording saved SID:', RecordingSid);
-
     res.sendStatus(200);
 
   } catch (error) {
-    console.error('❌ Recording error:', error);
+    console.error('Recording error:', error);
     res.sendStatus(500);
   }
 };
 
-// ðŸ“Š GET CALL LOGS
-exports.getCalls = async (req, res) => {
-  try {
-    const calls = await Call.find().sort({ createdAt: -1 });
-    res.json(calls);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch calls' });
-  }
-};
-
-// ðŸ“ž INCOMING CALL
+// ==========================
+// 📞 INCOMING CALL (WITH IVR)
+// ==========================
 exports.handleIncomingCall = async (req, res) => {
   try {
     const CallSid = req.body?.CallSid;
     const From = req.body?.From;
     const To = req.body?.To;
 
-    console.log('ðŸ“ž INBOUND CALL:', From, 'â†’', To);
+    console.log('INBOUND CALL:', From, '→', To);
 
     const normalizedFrom = normalizePhone(From);
 
@@ -247,36 +258,52 @@ exports.handleIncomingCall = async (req, res) => {
       });
     }
 
-    res.set('Content-Type', 'text/xml');
+    const twiml = new VoiceResponse();
 
-    res.send(`
-<Response>
-  <Dial
-    callerId="${process.env.TWILIO_PHONE_NUMBER}"
-    timeout="20"
-    record="record-from-answer"
-    recordingStatusCallback="${process.env.BASE_URL?.trim()}/api/calls/recording-status"
-    recordingStatusCallbackMethod="POST"
-  >
-    <Client>web_user</Client>
-  </Dial>
-</Response>
-`);
+    const gather = twiml.gather({
+      numDigits: 1,
+      action: `${process.env.BASE_URL}/api/calls/ivr`,
+      method: 'POST'
+    });
+
+    gather.say(
+      { voice: 'alice' },
+      'Welcome. Press 1 for Sales. Press 2 for Support.'
+    );
+
+    twiml.redirect(`${process.env.BASE_URL}/api/calls/incoming-call`);
+
+    res.type('text/xml');
+    res.send(twiml.toString());
 
   } catch (err) {
-    console.error('âŒ Incoming call error:', err);
+    console.error('Incoming call error:', err);
 
     res.set('Content-Type', 'text/xml');
     res.send(`<Response><Say>Error</Say></Response>`);
   }
 };
 
-// ðŸ§¹ CLEAR CALLS
+// ==========================
+// 🧹 CLEAR CALLS
+// ==========================
 exports.clearCalls = async (req, res) => {
   try {
     await Call.deleteMany({});
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to clear calls' });
+  }
+};
+
+// ==========================
+// 📊 GET CALL LOGS
+// ==========================
+exports.getCalls = async (req, res) => {
+  try {
+    const calls = await Call.find().sort({ createdAt: -1 });
+    res.json(calls);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch calls' });
   }
 };
