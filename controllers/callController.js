@@ -27,7 +27,9 @@ exports.handleIVR = (req, res) => {
       record: 'record-from-ringing-dual',
 
       // 🔥 KEEP CALLBACK
-      recordingStatusCallback: `${process.env.BASE_URL?.replace(/\/$/, '')}/api/calls/recording-status`,
+      recordingStatusCallback: encodeURI(
+  `${process.env.BASE_URL?.replace(/\/$/, '')}/api/calls/recording-status`
+),
       recordingStatusCallbackMethod: 'POST',
 
       // 🔥 ENSURE CALLBACK FIRES
