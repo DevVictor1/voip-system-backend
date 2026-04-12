@@ -21,12 +21,18 @@ exports.handleIVR = (req, res) => {
     twiml.say('Connecting you now');
 
     const dial = twiml.dial({
-  callerId: process.env.TWILIO_PHONE_NUMBER,
-  record: 'record-from-answer-dual', // 🔥 CHANGE THIS
-  recordingStatusCallback: `${process.env.BASE_URL}/api/calls/recording-status`,
-  recordingStatusCallbackMethod: 'POST',
-  recordingStatusCallbackEvent: 'completed', // 🔥 ADD THIS
-});
+      callerId: process.env.TWILIO_PHONE_NUMBER,
+
+      // 🔥 FINAL WORKING MODE
+      record: 'record-from-ringing-dual',
+
+      // 🔥 KEEP CALLBACK
+      recordingStatusCallback: `${process.env.BASE_URL}/api/calls/recording-status`,
+      recordingStatusCallbackMethod: 'POST',
+
+      // 🔥 ENSURE CALLBACK FIRES
+      recordingStatusCallbackEvent: 'completed',
+    });
 
     dial.client('web_user');
   } 
