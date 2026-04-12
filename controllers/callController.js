@@ -17,17 +17,21 @@ exports.handleIVR = (req, res) => {
 
   console.log('IVR INPUT:', digit);
 
-  if (digit === '1') {
+  if (digit === '1' || digit === '2') {
     twiml.say('Connecting you now');
-    twiml.dial().client('web_user');
-  } 
-  else if (digit === '2') {
-    twiml.say('Connecting you now');
-    twiml.dial().client('web_user');
+
+    const dial = twiml.dial({
+      callerId: process.env.TWILIO_PHONE_NUMBER,
+      record: 'record-from-answer',
+      recordingStatusCallback: `${process.env.BASE_URL}/api/calls/recording-status`,
+      recordingStatusCallbackMethod: 'POST'
+    });
+
+    dial.client('web_user');
   } 
   else {
     twiml.say('Invalid option');
-    twiml.redirect('/api/calls/incoming-call'); // ✅ FIXED
+    twiml.redirect('/api/calls/incoming-call');
   }
 
   res.type('text/xml');
