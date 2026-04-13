@@ -94,7 +94,9 @@ exports.handleIVR = async (req, res) => {
 
     // ✅ FILTER ONLY ONLINE AGENTS
     const availableAgents = selectedTeam.filter(
-      (agent) => global.connectedUsers?.[agent]
+      (agent) =>
+        global.connectedUsers?.[agent] &&
+        global.agentStatus?.[agent] === 'online'
     );
     const agentToDial = pickNextAgent(digit, availableAgents);
 

@@ -91,6 +91,8 @@ global.io = io;
 // 🔥 STORE USERS
 const users = {};
 global.connectedUsers = users;
+const agentStatus = {};
+global.agentStatus = agentStatus;
 
 io.on('connection', (socket) => {
   console.log('⚡ Connected:', socket.id);
@@ -98,7 +100,15 @@ io.on('connection', (socket) => {
   // ✅ REGISTER USER
   socket.on('registerUser', (userId) => {
     users[userId] = socket.id;
+    agentStatus[userId] = 'online';
     console.log(`✅ Registered ${userId} → ${socket.id}`);
+  });
+
+  socket.on('agentStatus', (data) => {
+    const { userId, status } = data || {};
+    if (!userId || !status) return;
+    agentStatus[userId] = status;
+    console.log(`📶 Status ${userId} → ${status}`);
   });
 
   socket.on('disconnect', () => {
@@ -107,6 +117,7 @@ io.on('connection', (socket) => {
     for (const userId in users) {
       if (users[userId] === socket.id) {
         delete users[userId];
+        agentStatus[userId] = 'offline';
       }
     }
   });
