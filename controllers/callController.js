@@ -49,13 +49,21 @@ exports.handleIVR = async (req, res) => {
 
     const dial = twiml.dial({
       callerId: process.env.TWILIO_PHONE_NUMBER,
-      record: 'record-from-ringing-dual',
+      record: 'record-from-answer-dual',
       recordingStatusCallback: 'https://voip-system-backend.onrender.com/api/calls/recording-status',
       recordingStatusCallbackMethod: 'POST',
       recordingStatusCallbackEvent: 'completed',
     });
 
-    dial.client('web_user');
+    // ✅ NEW ROUTING
+    if (digit === '1') {
+      dial.client('agent_1');
+    } else if (digit === '2') {
+      dial.client('agent_2');
+    } else {
+      dial.client('web_user');
+    }
+
   } 
   else {
     twiml.say('Invalid option');
