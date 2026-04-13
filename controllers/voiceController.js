@@ -3,7 +3,7 @@ const VoiceGrant = AccessToken.VoiceGrant;
 
 exports.generateToken = (req, res) => {
   try {
-    const identity = 'web_user'; // ðŸ”¥ must match <client>web_user</client>
+    const identity = req.query.userId || 'web_user'; // ðŸ”¥ fallback to web_user
 
     const token = new AccessToken(
       process.env.TWILIO_ACCOUNT_SID,
