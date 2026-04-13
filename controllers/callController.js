@@ -1,6 +1,15 @@
 ﻿const Call = require('../models/Call');
 const Contact = require('../models/Contact');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
+const lastAgentIndexByTeam = {};
+
+const pickNextAgent = (teamKey, agents) => {
+  if (!agents.length) return null;
+  const lastIndex = lastAgentIndexByTeam[teamKey] ?? -1;
+  const nextIndex = (lastIndex + 1) % agents.length;
+  lastAgentIndexByTeam[teamKey] = nextIndex;
+  return agents[nextIndex];
+};
 
 // NORMALIZE
 const normalizePhone = (phone) => {
@@ -87,11 +96,12 @@ exports.handleIVR = async (req, res) => {
     const availableAgents = selectedTeam.filter(
       (agent) => global.connectedUsers?.[agent]
     );
+    const agentToDial = pickNextAgent(digit, availableAgents);
 
     // ==========================
     // ❗ FALLBACK (NO AGENTS)
     // ==========================
-    if (availableAgents.length === 0) {
+    if (!agentToDial) {
       twiml.say('No agents are available at the moment. Please try again later.');
       return res.type('text/xml').send(twiml.toString());
     }
@@ -130,9 +140,7 @@ exports.handleIVR = async (req, res) => {
     });
 
     // 🔥 RING ONLY AVAILABLE AGENTS
-    availableAgents.forEach(agent => {
-      dial.client(agent);
-    });
+    dial.client(agentToDial);
 
     return res.type('text/xml').send(twiml.toString());
   }
@@ -378,8 +386,9 @@ exports.handleIncomingCall = async (req, res) => {
 
     const gather = twiml.gather({
       numDigits: 1,
-      action: '/api/calls/ivr', // ✅ FIXED
-      method: 'POST'
+      action: '/api/calls/ivr?step=dept', // ✅ FIXED
+      method: 'POST',
+      timeout: 5
     });
 
     gather.say(
