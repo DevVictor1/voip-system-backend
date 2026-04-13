@@ -13,13 +13,56 @@ const normalizePhone = (phone) => {
 // ==========================
 exports.handleIVR = async (req, res) => {
   const twiml = new VoiceResponse();
+
   const digit = req.body.Digits;
+  const step = req.query.step || 'lang';
 
-  console.log('IVR INPUT:', digit);
+  console.log('IVR STEP:', step, 'INPUT:', digit);
 
-  if (digit === '1' || digit === '2') {
+  // ==========================
+  // 🌍 STEP 1: LANGUAGE
+  // ==========================
+  if (step === 'lang') {
+    const gather = twiml.gather({
+      numDigits: 1,
+      action: '/api/calls/ivr?step=dept',
+      method: 'POST'
+    });
 
-    // 🔥 GET CALL INFO
+    gather.say(
+      { voice: 'alice' },
+      'Press 1 for English. Press 2 for Vietnamese.'
+    );
+
+    twiml.redirect('/api/calls/incoming-call');
+  }
+
+  // ==========================
+  // 🏢 STEP 2: DEPARTMENT
+  // ==========================
+  else if (step === 'dept') {
+    if (!digit) {
+      twiml.redirect('/api/calls/ivr?step=lang');
+    } else {
+      const gather = twiml.gather({
+        numDigits: 1,
+        action: `/api/calls/ivr?step=route`,
+        method: 'POST'
+      });
+
+      gather.say(
+        { voice: 'alice' },
+        'Press 1 for Technical Support. Press 2 for Customer Service. Press 3 for Sales.'
+      );
+
+      twiml.redirect('/api/calls/ivr?step=dept');
+    }
+  }
+
+  // ==========================
+  // 📞 STEP 3: ROUTING (QUEUE)
+  // ==========================
+  else if (step === 'route') {
     const CallSid = req.body.CallSid;
     const From = req.body.From;
     const To = req.body.To;
@@ -27,33 +70,38 @@ exports.handleIVR = async (req, res) => {
     const contact = await Contact.findOne({
       'phones.number': { $regex: From.slice(-10) }
     });
-    
 
-    // 🔥 EMIT POPUP HERE (AFTER IVR SELECTION)
-    // 🎯 TARGET USER BASED ON IVR
-const targetUser =
-  digit === '1' ? 'agent_1' :
-  digit === '2' ? 'agent_2' :
-  'web_user';
+    // ✅ TEAMS (your client requirement)
+    const teams = {
+      '1': ['agent_1', 'agent_2'], // Tech
+      '2': ['agent_3'],           // Support
+      '3': ['agent_4', 'agent_5'] // Sales
+    };
 
-const targetSocketId = global.connectedUsers?.[targetUser];
+    const selectedTeam = teams[digit] || [];
 
-// 🔥 EMIT ONLY TO TARGET USER
-if (global.io && targetSocketId) {
-  global.io.to(targetSocketId).emit('incomingCall', {
-    callSid: CallSid,
-    from: From,
-    to: To,
-    contact: contact
-      ? {
-          firstName: contact.firstName,
-          lastName: contact.lastName,
-          dba: contact.dba,
-          mid: contact.mid || ''
+    // 🔔 POPUP TO TEAM
+    if (global.io && selectedTeam.length > 0) {
+      selectedTeam.forEach((agent) => {
+        const socketId = global.connectedUsers?.[agent];
+
+        if (socketId) {
+          global.io.to(socketId).emit('incomingCall', {
+            callSid: CallSid,
+            from: From,
+            to: To,
+            contact: contact
+              ? {
+                  firstName: contact.firstName,
+                  lastName: contact.lastName,
+                  dba: contact.dba,
+                  mid: contact.mid || ''
+                }
+              : null
+          });
         }
-      : null
-  });
-}
+      });
+    }
 
     twiml.say('Connecting you now');
 
@@ -65,19 +113,15 @@ if (global.io && targetSocketId) {
       recordingStatusCallbackEvent: 'completed',
     });
 
-    // ✅ NEW ROUTING
-    if (digit === '1') {
-      dial.client('agent_1');
-    } else if (digit === '2') {
-      dial.client('agent_2');
-    } else {
+    // 🔥 RING ALL AGENTS (QUEUE)
+    selectedTeam.forEach(agent => {
+      dial.client(agent);
+    });
+
+    // fallback
+    if (selectedTeam.length === 0) {
       dial.client('web_user');
     }
-
-  } 
-  else {
-    twiml.say('Invalid option');
-    twiml.redirect('https://voip-system-backend.onrender.com/api/calls/incoming-call');
   }
 
   res.type('text/xml');
@@ -326,7 +370,7 @@ exports.handleIncomingCall = async (req, res) => {
 
     gather.say(
       { voice: 'alice' },
-      'Welcome. Press 1 for Sales. Press 2 for Support.'
+      'Welcome. Press 1 for English. Press 2 for Vietnamese.'
     );
 
     twiml.redirect('/api/calls/incoming-call'); // ✅ FIXED
