@@ -26,13 +26,17 @@ exports.handleIVR = async (req, res) => {
     const gather = twiml.gather({
       numDigits: 1,
       action: '/api/calls/ivr?step=dept',
-      method: 'POST'
+      method: 'POST',
+      timeout: 5 // ✅ FIX
     });
 
     gather.say(
       { voice: 'alice' },
       'Press 1 for English. Press 2 for Vietnamese.'
     );
+
+    // ✅ fallback if nothing pressed
+    twiml.redirect('/api/calls/ivr?step=lang');
 
     return res.type('text/xml').send(twiml.toString());
   }
@@ -44,13 +48,17 @@ exports.handleIVR = async (req, res) => {
     const gather = twiml.gather({
       numDigits: 1,
       action: '/api/calls/ivr?step=route',
-      method: 'POST'
+      method: 'POST',
+      timeout: 5 // ✅ FIX
     });
 
     gather.say(
       { voice: 'alice' },
       'Press 1 for Technical Support. Press 2 for Customer Service. Press 3 for Sales.'
     );
+
+    // ✅ fallback if nothing pressed
+    twiml.redirect('/api/calls/ivr?step=dept');
 
     return res.type('text/xml').send(twiml.toString());
   }
