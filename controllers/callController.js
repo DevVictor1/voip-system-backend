@@ -34,35 +34,31 @@ exports.handleIVR = async (req, res) => {
       'Press 1 for English. Press 2 for Vietnamese.'
     );
 
-    twiml.redirect('/api/calls/incoming-call');
+    return res.type('text/xml').send(twiml.toString());
   }
 
   // ==========================
   // 🏢 STEP 2: DEPARTMENT
   // ==========================
-  else if (step === 'dept') {
-    if (!digit) {
-      twiml.redirect('/api/calls/ivr?step=lang');
-    } else {
-      const gather = twiml.gather({
-        numDigits: 1,
-        action: `/api/calls/ivr?step=route`,
-        method: 'POST'
-      });
+  if (step === 'dept') {
+    const gather = twiml.gather({
+      numDigits: 1,
+      action: '/api/calls/ivr?step=route',
+      method: 'POST'
+    });
 
-      gather.say(
-        { voice: 'alice' },
-        'Press 1 for Technical Support. Press 2 for Customer Service. Press 3 for Sales.'
-      );
+    gather.say(
+      { voice: 'alice' },
+      'Press 1 for Technical Support. Press 2 for Customer Service. Press 3 for Sales.'
+    );
 
-      twiml.redirect('/api/calls/ivr?step=dept');
-    }
+    return res.type('text/xml').send(twiml.toString());
   }
 
   // ==========================
   // 📞 STEP 3: ROUTING (QUEUE)
   // ==========================
-  else if (step === 'route') {
+  if (step === 'route') {
     const CallSid = req.body.CallSid;
     const From = req.body.From;
     const To = req.body.To;
@@ -71,7 +67,6 @@ exports.handleIVR = async (req, res) => {
       'phones.number': { $regex: From.slice(-10) }
     });
 
-    // ✅ TEAMS (your client requirement)
     const teams = {
       '1': ['agent_1', 'agent_2'], // Tech
       '2': ['agent_3'],           // Support
@@ -80,28 +75,41 @@ exports.handleIVR = async (req, res) => {
 
     const selectedTeam = teams[digit] || [];
 
-    // 🔔 POPUP TO TEAM
-    if (global.io && selectedTeam.length > 0) {
-      selectedTeam.forEach((agent) => {
-        const socketId = global.connectedUsers?.[agent];
+    // ✅ FILTER ONLY ONLINE AGENTS
+    const availableAgents = selectedTeam.filter(
+      (agent) => global.connectedUsers?.[agent]
+    );
 
-        if (socketId) {
-          global.io.to(socketId).emit('incomingCall', {
-            callSid: CallSid,
-            from: From,
-            to: To,
-            contact: contact
-              ? {
-                  firstName: contact.firstName,
-                  lastName: contact.lastName,
-                  dba: contact.dba,
-                  mid: contact.mid || ''
-                }
-              : null
-          });
-        }
-      });
+    // ==========================
+    // ❗ FALLBACK (NO AGENTS)
+    // ==========================
+    if (availableAgents.length === 0) {
+      twiml.say('No agents are available at the moment. Please try again later.');
+      return res.type('text/xml').send(twiml.toString());
     }
+
+    // ==========================
+    // 🔔 POPUP TO AGENTS
+    // ==========================
+    availableAgents.forEach((agent) => {
+      const socketId = global.connectedUsers?.[agent];
+
+      if (socketId) {
+        global.io.to(socketId).emit('incomingCall', {
+          callSid: CallSid,
+          from: From,
+          to: To,
+          contact: contact
+            ? {
+                firstName: contact.firstName,
+                lastName: contact.lastName,
+                dba: contact.dba,
+                mid: contact.mid || ''
+              }
+            : null
+        });
+      }
+    });
 
     twiml.say('Connecting you now');
 
@@ -113,19 +121,17 @@ exports.handleIVR = async (req, res) => {
       recordingStatusCallbackEvent: 'completed',
     });
 
-    // 🔥 RING ALL AGENTS (QUEUE)
-    selectedTeam.forEach(agent => {
+    // 🔥 RING ONLY AVAILABLE AGENTS
+    availableAgents.forEach(agent => {
       dial.client(agent);
     });
 
-    // fallback
-    if (selectedTeam.length === 0) {
-      dial.client('web_user');
-    }
+    return res.type('text/xml').send(twiml.toString());
   }
 
-  res.type('text/xml');
-  res.send(twiml.toString());
+  // fallback safety
+  twiml.say('Invalid option');
+  return res.type('text/xml').send(twiml.toString());
 };
 
 // ==========================
