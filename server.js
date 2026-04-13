@@ -3,7 +3,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const axios = require('axios'); // ✅ ADDED
+const axios = require('axios');
 
 const connectDB = require('./config/db');
 const callRoutes = require('./routes/callRoutes');
@@ -42,7 +42,7 @@ app.use('/api/sms', smsRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/voice', voiceRoutes);
 
-// 🔥 ✅ NEW RECORDING PROXY ROUTE (THIS FIXES YOUR ISSUE)
+// 🔥 RECORDING PROXY
 app.get('/api/recordings/:sid', async (req, res) => {
   try {
     const { sid } = req.params;
@@ -73,10 +73,11 @@ app.get('/', (req, res) => {
   res.send('VoIP Backend Running...');
 });
 
-// ✅ CREATE HTTP SERVER
 const server = http.createServer(app);
 
-// ✅ SOCKET.IO
+// ==========================
+// 🔥 SOCKET.IO (UPDATED)
+// ==========================
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -87,11 +88,27 @@ const io = new Server(server, {
 
 global.io = io;
 
+// 🔥 STORE USERS
+const users = {};
+global.connectedUsers = users;
+
 io.on('connection', (socket) => {
   console.log('⚡ Connected:', socket.id);
 
+  // ✅ REGISTER USER
+  socket.on('registerUser', (userId) => {
+    users[userId] = socket.id;
+    console.log(`✅ Registered ${userId} → ${socket.id}`);
+  });
+
   socket.on('disconnect', () => {
     console.log('❌ Disconnected:', socket.id);
+
+    for (const userId in users) {
+      if (users[userId] === socket.id) {
+        delete users[userId];
+      }
+    }
   });
 });
 

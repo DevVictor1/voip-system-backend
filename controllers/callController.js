@@ -27,23 +27,33 @@ exports.handleIVR = async (req, res) => {
     const contact = await Contact.findOne({
       'phones.number': { $regex: From.slice(-10) }
     });
+    
 
     // 🔥 EMIT POPUP HERE (AFTER IVR SELECTION)
-    if (global.io) {
-      global.io.emit('incomingCall', {
-        callSid: CallSid,
-        from: From,
-        to: To,
-        contact: contact
-          ? {
-              firstName: contact.firstName,
-              lastName: contact.lastName,
-              dba: contact.dba,
-              mid: contact.mid || ''
-            }
-          : null
-      });
-    }
+    // 🎯 TARGET USER BASED ON IVR
+const targetUser =
+  digit === '1' ? 'agent_1' :
+  digit === '2' ? 'agent_2' :
+  'web_user';
+
+const targetSocketId = global.connectedUsers?.[targetUser];
+
+// 🔥 EMIT ONLY TO TARGET USER
+if (global.io && targetSocketId) {
+  global.io.to(targetSocketId).emit('incomingCall', {
+    callSid: CallSid,
+    from: From,
+    to: To,
+    contact: contact
+      ? {
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          dba: contact.dba,
+          mid: contact.mid || ''
+        }
+      : null
+  });
+}
 
     twiml.say('Connecting you now');
 
