@@ -109,6 +109,15 @@ io.on('connection', (socket) => {
     if (!userId || !status) return;
     agentStatus[userId] = status;
     console.log(`📶 Status ${userId} → ${status}`);
+    io.emit('agentStatus', { userId, status });
+  });
+
+  socket.on('getAgentsStatus', () => {
+    const statusMap = { ...agentStatus };
+    for (const userId in users) {
+      if (!statusMap[userId]) statusMap[userId] = 'online';
+    }
+    socket.emit('agentsStatus', statusMap);
   });
 
   socket.on('disconnect', () => {
@@ -118,6 +127,7 @@ io.on('connection', (socket) => {
       if (users[userId] === socket.id) {
         delete users[userId];
         agentStatus[userId] = 'offline';
+        io.emit('agentStatus', { userId, status: 'offline' });
       }
     }
   });
