@@ -1,11 +1,33 @@
 const Message = require('../models/Message');
 const Contact = require('../models/Contact');
 const twilio = require('twilio');
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
 
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+
+const formatToE164 = (input) => {
+  try {
+    if (!input) return null;
+
+    let phoneNumber = parsePhoneNumberFromString(input);
+
+    if (!phoneNumber) {
+      phoneNumber = parsePhoneNumberFromString(input, 'NG');
+    }
+
+    if (phoneNumber && phoneNumber.isValid()) {
+      return phoneNumber.format('E.164');
+    }
+
+    return null;
+  } catch (err) {
+    console.error('PHONE FORMAT ERROR:', err.message);
+    return null;
+  }
+};
 
 // 🔥 NORMALIZE (SAFE)
 const normalize = (num) => {
@@ -62,11 +84,18 @@ exports.sendSMS = async (req, res) => {
     }
 
     const normalizedTo = normalize(to);
+    const formattedTo = formatToE164(to);
+
+    if (!formattedTo) {
+      return res.status(400).json({ error: 'Invalid phone number' });
+    }
+
+    console.log('Sending SMS to:', formattedTo);
 
     const payload = {
       body: text,
       from: process.env.TWILIO_PHONE_NUMBER,
-      to,
+      to: formattedTo,
     };
 
     const baseUrl = process.env.BASE_URL?.trim();
