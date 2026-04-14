@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+
+const upload = multer({ dest: 'uploads/' });
 
 const {
   receiveSMS,
@@ -8,7 +11,8 @@ const {
   getMessages,
   markAsRead,
   clearMessages,
-  smsStatusCallback
+  smsStatusCallback,
+  uploadMedia
 } = require('../controllers/smsController');
 
 // 📩 Incoming
@@ -17,6 +21,9 @@ router.post('/incoming-sms', receiveSMS);
 
 // 📤 Send
 router.post('/send', sendSMS);
+
+// 📎 Upload media
+router.post('/upload', upload.single('file'), uploadMedia);
 
 // 📊 STATUS CALLBACK (NEW 🔥)
 router.post('/status', smsStatusCallback);

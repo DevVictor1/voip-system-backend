@@ -8,6 +8,10 @@ const messageSchema = new mongoose.Schema(
     to: String,
     body: String,
     direction: String,
+    media: {
+      type: [String],
+      default: [],
+    },
 
     read: {
       type: Boolean,

@@ -48,6 +48,14 @@ const findContactByPhone = async (phone) => {
 exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
+    const numMedia = parseInt(req.body.NumMedia || '0');
+    const media = [];
+
+    if (numMedia > 0) {
+      for (let i = 0; i < numMedia; i += 1) {
+        media.push(req.body[`MediaUrl${i}`]);
+      }
+    }
 
     console.log('📩 INCOMING SMS:', From, Body);
 
@@ -57,6 +65,7 @@ exports.receiveSMS = async (req, res) => {
       fromFull: From,     // 🔥 KEEP ORIGINAL
       toFull: To,         // 🔥 KEEP ORIGINAL
       body: Body,
+      media,
       direction: 'inbound',
       read: false,
       status: 'received',
@@ -76,10 +85,10 @@ exports.receiveSMS = async (req, res) => {
 // 📤 SEND SMS
 exports.sendSMS = async (req, res) => {
   try {
-    const { to, body, message } = req.body;
+    const { to, body, message, mediaUrl } = req.body;
     const text = body || message;
 
-    if (!to || !text) {
+    if (!to || (!text && !mediaUrl)) {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
@@ -92,10 +101,15 @@ exports.sendSMS = async (req, res) => {
 
     console.log('Sending SMS to:', formattedTo);
 
+    const mediaList = mediaUrl
+      ? (Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl])
+      : undefined;
+
     const payload = {
       body: text,
       from: process.env.TWILIO_PHONE_NUMBER,
       to: formattedTo,
+      mediaUrl: mediaList,
     };
 
     const baseUrl = process.env.BASE_URL?.trim();
@@ -112,6 +126,7 @@ exports.sendSMS = async (req, res) => {
       fromFull: process.env.TWILIO_PHONE_NUMBER,
       toFull: to,
       body: text,
+      media: mediaList || [],
       direction: 'outbound',
       status: twilioRes.status || 'queued',
       read: true,
@@ -243,6 +258,25 @@ exports.clearMessages = async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: 'Failed' });
+  }
+};
+
+// 📎 UPLOAD MEDIA
+exports.uploadMedia = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const baseUrl = process.env.BASE_URL?.trim()
+      || `${req.protocol}://${req.get('host')}`;
+
+    const url = `${baseUrl}/uploads/${req.file.filename}`;
+
+    res.json({ url });
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    res.status(500).json({ error: 'Upload failed' });
   }
 };
 
