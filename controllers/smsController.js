@@ -140,6 +140,13 @@ exports.smsStatusCallback = async (req, res) => {
       { status: MessageStatus }
     );
 
+    if (global.io) {
+      global.io.emit('messageStatus', {
+        sid: MessageSid,
+        status: MessageStatus
+      });
+    }
+
     res.sendStatus(200);
   } catch (err) {
     console.error('❌ STATUS ERROR:', err);
