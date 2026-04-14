@@ -1,14 +1,19 @@
-﻿const Message = require('../models/Message');
+const Message = require('../models/Message');
 const Contact = require('../models/Contact');
-const client = require('../config/twilio');
+const twilio = require('twilio');
 
-// ðŸ”¥ NORMALIZE (SAFE)
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+// 🔥 NORMALIZE (SAFE)
 const normalize = (num) => {
   if (!num) return '';
   return num.replace(/\D/g, '').slice(-10);
 };
 
-// ðŸ” FIND CONTACT
+// 🔍 FIND CONTACT
 const findContactByPhone = async (phone) => {
   const normalized = normalize(phone);
 
@@ -17,18 +22,18 @@ const findContactByPhone = async (phone) => {
   });
 };
 
-// ðŸ“© RECEIVE SMS
+// 📩 RECEIVE SMS
 exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
 
-    console.log('ðŸ“© INCOMING SMS:', From, Body);
+    console.log('📩 INCOMING SMS:', From, Body);
 
     const message = await Message.create({
       from: normalize(From),
       to: normalize(To),
-      fromFull: From,     // ðŸ”¥ KEEP ORIGINAL
-      toFull: To,         // ðŸ”¥ KEEP ORIGINAL
+      fromFull: From,     // 🔥 KEEP ORIGINAL
+      toFull: To,         // 🔥 KEEP ORIGINAL
       body: Body,
       direction: 'inbound',
       read: false,
@@ -41,12 +46,12 @@ exports.receiveSMS = async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error('âŒ RECEIVE ERROR:', error);
+    console.error('❌ RECEIVE ERROR:', error);
     res.sendStatus(500);
   }
 };
 
-// ðŸ“¤ SEND SMS
+// 📤 SEND SMS
 exports.sendSMS = async (req, res) => {
   try {
     const { to, body, message } = req.body;
@@ -58,12 +63,18 @@ exports.sendSMS = async (req, res) => {
 
     const normalizedTo = normalize(to);
 
-    const twilioRes = await client.messages.create({
+    const payload = {
       body: text,
       from: process.env.TWILIO_PHONE_NUMBER,
       to,
-      statusCallback: `${process.env.BASE_URL?.trim()}/api/sms/status`,
-    });
+    };
+
+    const baseUrl = process.env.BASE_URL?.trim();
+    if (baseUrl) {
+      payload.statusCallback = baseUrl + '/api/sms/status';
+    }
+
+    const twilioRes = await client.messages.create(payload);
 
     const saved = await Message.create({
       sid: twilioRes.sid,
@@ -84,12 +95,13 @@ exports.sendSMS = async (req, res) => {
     res.json(saved);
 
   } catch (error) {
-    console.error('âŒ SEND ERROR:', error);
+    console.error(error);
+    console.error('SEND ERROR:', error);
     res.status(500).json({ error: 'Send failed' });
   }
 };
 
-// ðŸ“Š STATUS CALLBACK
+// 📊 STATUS CALLBACK
 exports.smsStatusCallback = async (req, res) => {
   try {
     const { MessageSid, MessageStatus } = req.body;
@@ -101,12 +113,12 @@ exports.smsStatusCallback = async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('âŒ STATUS ERROR:', err);
+    console.error('❌ STATUS ERROR:', err);
     res.sendStatus(500);
   }
 };
 
-// ðŸ“š GET CONVERSATIONS
+// 📚 GET CONVERSATIONS
 exports.getConversations = async (req, res) => {
   try {
     const messages = await Message.find().sort({ createdAt: -1 });
@@ -142,12 +154,12 @@ exports.getConversations = async (req, res) => {
     res.json(Object.values(conversations));
 
   } catch (error) {
-    console.error('âŒ Conversations error:', error);
+    console.error('❌ Conversations error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// ðŸ’¬ GET MESSAGES
+// 💬 GET MESSAGES
 exports.getMessages = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
@@ -162,12 +174,12 @@ exports.getMessages = async (req, res) => {
     res.json(messages);
 
   } catch (error) {
-    console.error('âŒ Messages error:', error);
+    console.error('❌ Messages error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// âœ… MARK AS READ
+// ✅ MARK AS READ
 exports.markAsRead = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
@@ -183,12 +195,12 @@ exports.markAsRead = async (req, res) => {
     res.json({ success: true });
 
   } catch (error) {
-    console.error('âŒ Read error:', error);
+    console.error('❌ Read error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// ðŸ§¹ CLEAR
+// 🧹 CLEAR
 exports.clearMessages = async (req, res) => {
   try {
     await Message.deleteMany({});
@@ -197,3 +209,13 @@ exports.clearMessages = async (req, res) => {
     res.status(500).json({ error: 'Failed' });
   }
 };
+
+
+
+
+
+
+
+
+
+
