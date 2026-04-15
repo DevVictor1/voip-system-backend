@@ -154,6 +154,42 @@ const findTeamByConversationId = async (conversationId) => {
   return teams.find((team) => team.slug === conversationId) || null;
 };
 
+const syncConversationSummary = async (conversationId, type, conversationRecord = null) => {
+  if (!conversationId || !type) return conversationRecord || null;
+
+  const latestMessage = await Message.findOne({
+    conversationId,
+    conversationType: type,
+  }).sort({ createdAt: -1 });
+
+  const conversation = conversationRecord || await Conversation.findOne({
+    conversationId,
+    type,
+  }).sort({ createdAt: 1 });
+
+  if (!conversation) {
+    return null;
+  }
+
+  const nextPreview = latestMessage?.body || '';
+  const nextTimestamp = latestMessage?.createdAt || null;
+  const currentPreview = conversation.lastMessagePreview || '';
+  const currentTimestamp = conversation.lastMessageAt
+    ? new Date(conversation.lastMessageAt).getTime()
+    : null;
+  const nextTimeValue = nextTimestamp
+    ? new Date(nextTimestamp).getTime()
+    : null;
+
+  if (currentPreview !== nextPreview || currentTimestamp !== nextTimeValue) {
+    conversation.lastMessagePreview = nextPreview;
+    conversation.lastMessageAt = nextTimestamp;
+    await conversation.save();
+  }
+
+  return conversation;
+};
+
 const buildInternalConversationMap = async (userId, role) => {
   const conversations = new Map();
 
@@ -389,8 +425,13 @@ exports.startDirectConversation = async (req, res) => {
       targetUserId,
       createdBy: currentUserId,
     });
+    const syncedConversation = await syncConversationSummary(
+      conversation?.conversationId,
+      'internal_dm',
+      conversation
+    );
 
-    return res.json(conversation);
+    return res.json(syncedConversation || conversation);
   } catch (error) {
     console.error('❌ Start direct conversation error:', error);
     res.status(500).json({ error: 'Failed to start direct conversation' });
@@ -408,7 +449,12 @@ exports.getConversations = async (req, res) => {
       isArchived: false,
     }).sort({ updatedAt: -1 });
 
-    dmRecords.forEach((conversation) => {
+    for (const dmRecord of dmRecords) {
+      const conversation = await syncConversationSummary(
+        dmRecord.conversationId,
+        'internal_dm',
+        dmRecord
+      ) || dmRecord;
       const participants = getSortedParticipants(conversation.participants);
       const otherAgentId = participants.find((participant) => participant !== userId) || conversation.createdBy;
       const otherAgent = getAgentMeta(otherAgentId);
@@ -428,7 +474,7 @@ exports.getConversations = async (req, res) => {
         isTeam: false,
         previewFallback: `Message ${otherAgent.name}`,
       });
-    });
+    }
 
     const messages = await Message.find({
       conversationType: { $in: INTERNAL_TYPES },
@@ -549,6 +595,9 @@ exports.getThread = async (req, res) => {
           createdBy: messages[0]?.senderId || userId,
         })
       : null;
+    const syncedDmConversation = dmConversation
+      ? await syncConversationSummary(conversationId, 'internal_dm', dmConversation)
+      : null;
 
     const teamRecord = !dmConversation
       ? await findTeamByConversationId(conversationId)
@@ -561,16 +610,19 @@ exports.getThread = async (req, res) => {
     const teamConversation = teamRecord
       ? await ensureTeamConversation(teamRecord)
       : null;
+    const syncedTeamConversation = teamConversation
+      ? await syncConversationSummary(conversationId, 'team', teamConversation)
+      : null;
 
-    const messageConversation = dmConversation
+    const messageConversation = syncedDmConversation
       ? {
           conversationType: 'internal_dm',
-          participants: dmConversation.participants || [],
+          participants: syncedDmConversation.participants || [],
         }
-      : teamConversation
+      : syncedTeamConversation
       ? {
           conversationType: 'team',
-          participants: teamConversation.participants || [],
+          participants: syncedTeamConversation.participants || [],
         }
       : messages[0]
       ? {
