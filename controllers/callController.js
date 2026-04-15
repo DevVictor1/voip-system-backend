@@ -3,6 +3,36 @@ const Contact = require('../models/Contact');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
 const lastAgentIndexByTeam = {};
 
+const normalizeLang = (lang) => (lang === 'vi' ? 'vi' : 'en');
+
+const SAY_OPTIONS = {
+  en: { language: 'en-US' },
+  vi: { language: 'vi-VN' }
+};
+
+const PROMPTS = {
+  en: {
+    languageMenu: 'Press 1 for English. Press 2 for Vietnamese.',
+    languageRetry: 'Invalid option. Please choose a language again.',
+    departmentMenu: 'Press 1 for Technical Support. Press 2 for Customer Service. Press 3 for Sales.',
+    departmentRetry: 'Invalid option. Please try again.',
+    connecting: 'Connecting you now.',
+    noAgents: 'No agents are available at the moment. Please try again later.',
+    error: 'An error occurred. Please try again later.'
+  },
+  vi: {
+    languageMenu: 'Nhan 1 cho tieng Anh. Nhan 2 cho tieng Viet.',
+    languageRetry: 'Lua chon khong hop le. Vui long chon lai ngon ngu.',
+    departmentMenu: 'Nhan 1 cho ho tro ky thuat. Nhan 2 cho cham soc khach hang. Nhan 3 cho bo phan ban hang.',
+    departmentRetry: 'Lua chon khong hop le. Vui long thu lai.',
+    connecting: 'Vui long doi trong giay lat. Chung toi dang ket noi cho quy khach.',
+    noAgents: 'Hien tai khong co dien vien nao san sang. Vui long thu lai sau.',
+    error: 'Da xay ra loi. Vui long thu lai sau.'
+  }
+};
+
+const buildIvrUrl = (step, lang) => `/api/calls/ivr?step=${step}&lang=${normalizeLang(lang)}`;
+
 const pickNextAgent = (teamKey, agents) => {
   if (!agents.length) return null;
   const lastIndex = lastAgentIndexByTeam[teamKey] ?? -1;
@@ -25,27 +55,40 @@ exports.handleIVR = async (req, res) => {
 
   const digit = req.body.Digits;
   const step = req.query.step || 'lang';
+  const currentLang = normalizeLang(req.query.lang);
+  const sayOptions = SAY_OPTIONS[currentLang];
+  const prompts = PROMPTS[currentLang];
 
-  console.log('IVR STEP:', step, 'INPUT:', digit);
+  console.log('IVR STEP:', step, 'LANG:', currentLang, 'INPUT:', digit);
 
   // ==========================
   // 🌍 STEP 1: LANGUAGE
   // ==========================
   if (step === 'lang') {
+    if (digit) {
+      if (digit === '1' || digit === '2') {
+        const selectedLang = digit === '2' ? 'vi' : 'en';
+        twiml.redirect(buildIvrUrl('dept', selectedLang));
+        return res.type('text/xml').send(twiml.toString());
+      }
+
+      twiml.say(SAY_OPTIONS.en, PROMPTS.en.languageRetry);
+    }
+
     const gather = twiml.gather({
       numDigits: 1,
-      action: '/api/calls/ivr?step=dept',
+      action: buildIvrUrl('lang', currentLang),
       method: 'POST',
       timeout: 5 // ✅ FIX
     });
 
     gather.say(
-      { voice: 'alice' },
-      'Press 1 for English. Press 2 for Vietnamese.'
+      sayOptions,
+      prompts.languageMenu
     );
 
     // ✅ fallback if nothing pressed
-    twiml.redirect('/api/calls/ivr?step=lang');
+    twiml.redirect(buildIvrUrl('lang', currentLang));
 
     return res.type('text/xml').send(twiml.toString());
   }
@@ -54,20 +97,24 @@ exports.handleIVR = async (req, res) => {
   // 🏢 STEP 2: DEPARTMENT
   // ==========================
   if (step === 'dept') {
+    if (digit && !['1', '2', '3'].includes(digit)) {
+      twiml.say(sayOptions, prompts.departmentRetry);
+    }
+
     const gather = twiml.gather({
       numDigits: 1,
-      action: '/api/calls/ivr?step=route',
+      action: buildIvrUrl('route', currentLang),
       method: 'POST',
       timeout: 5 // ✅ FIX
     });
 
     gather.say(
-      { voice: 'alice' },
-      'Press 1 for Technical Support. Press 2 for Customer Service. Press 3 for Sales.'
+      sayOptions,
+      prompts.departmentMenu
     );
 
     // ✅ fallback if nothing pressed
-    twiml.redirect('/api/calls/ivr?step=dept');
+    twiml.redirect(buildIvrUrl('dept', currentLang));
 
     return res.type('text/xml').send(twiml.toString());
   }
@@ -104,7 +151,13 @@ exports.handleIVR = async (req, res) => {
     // ❗ FALLBACK (NO AGENTS)
     // ==========================
     if (!agentToDial) {
-      twiml.say('No agents are available at the moment. Please try again later.');
+      if (!selectedTeam.length) {
+        twiml.say(sayOptions, prompts.departmentRetry);
+        twiml.redirect(buildIvrUrl('dept', currentLang));
+        return res.type('text/xml').send(twiml.toString());
+      }
+
+      twiml.say(sayOptions, prompts.noAgents);
       return res.type('text/xml').send(twiml.toString());
     }
 
@@ -131,7 +184,7 @@ exports.handleIVR = async (req, res) => {
       }
     });
 
-    twiml.say('Connecting you now');
+    twiml.say(sayOptions, prompts.connecting);
 
     const dial = twiml.dial({
       callerId: process.env.TWILIO_PHONE_NUMBER,
@@ -148,7 +201,8 @@ exports.handleIVR = async (req, res) => {
   }
 
   // fallback safety
-  twiml.say('Invalid option');
+  twiml.say(SAY_OPTIONS.en, PROMPTS.en.departmentRetry);
+  twiml.redirect(buildIvrUrl('lang', 'en'));
   return res.type('text/xml').send(twiml.toString());
 };
 
@@ -388,17 +442,17 @@ exports.handleIncomingCall = async (req, res) => {
 
     const gather = twiml.gather({
       numDigits: 1,
-      action: '/api/calls/ivr?step=dept', // ✅ FIXED
+      action: buildIvrUrl('lang', 'en'),
       method: 'POST',
       timeout: 5
     });
 
     gather.say(
-      { voice: 'alice' },
-      'Welcome. Press 1 for English. Press 2 for Vietnamese.'
+      SAY_OPTIONS.en,
+      PROMPTS.en.languageMenu
     );
 
-    twiml.redirect('/api/calls/incoming-call'); // ✅ FIXED
+    twiml.redirect('/api/calls/incoming-call');
 
     res.type('text/xml');
     res.send(twiml.toString());
@@ -407,7 +461,7 @@ exports.handleIncomingCall = async (req, res) => {
     console.error('Incoming call error:', err);
 
     res.set('Content-Type', 'text/xml');
-    res.send(`<Response><Say>Error</Say></Response>`);
+    res.send(`<Response><Say language="en-US">${PROMPTS.en.error}</Say></Response>`);
   }
 };
 
