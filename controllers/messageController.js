@@ -1,4 +1,6 @@
 const Message = require('../models/Message');
+const Conversation = require('../models/Conversation');
+const Team = require('../models/Team');
 const {
   INTERNAL_AGENTS,
   TEAM_CHATS,
@@ -86,11 +88,222 @@ const buildMessageDirection = (message, userId) => {
   return message.senderId === userId ? 'outbound' : 'inbound';
 };
 
+const getSortedParticipants = (participants = []) => {
+  return [...new Set((participants || []).filter(Boolean))].sort();
+};
+
+const parseLegacyDmConversationId = (conversationId) => {
+  if (!conversationId || !conversationId.startsWith('dm:')) {
+    return [];
+  }
+
+  return getSortedParticipants(
+    conversationId.replace(/^dm:/, '').split(':')
+  );
+};
+
+const getDmConversationTitle = (participants, currentUserId) => {
+  const otherParticipant = participants.find((participant) => participant !== currentUserId)
+    || participants[0]
+    || '';
+
+  return getAgentMeta(otherParticipant).name;
+};
+
+const findDmConversationByParticipants = async (participants) => {
+  const sortedParticipants = getSortedParticipants(participants);
+
+  if (sortedParticipants.length !== 2) {
+    return null;
+  }
+
+  return Conversation.findOne({
+    type: 'internal_dm',
+    participants: { $all: sortedParticipants, $size: 2 },
+  }).sort({ createdAt: 1 });
+};
+
+const ensureDmConversationRecord = async ({
+  currentUserId,
+  targetUserId,
+  conversationId,
+  participants,
+  createdBy,
+}) => {
+  const resolvedParticipants = getSortedParticipants(
+    participants?.length ? participants : [currentUserId, targetUserId]
+  );
+
+  if (resolvedParticipants.length !== 2) {
+    return null;
+  }
+
+  const legacyConversationId = conversationId || buildDmConversationId(
+    resolvedParticipants[0],
+    resolvedParticipants[1]
+  );
+
+  let conversation = await Conversation.findOne({
+    $or: [
+      { conversationId: legacyConversationId, type: 'internal_dm' },
+      { type: 'internal_dm', participants: { $all: resolvedParticipants, $size: 2 } },
+    ],
+  }).sort({ createdAt: 1 });
+
+  if (conversation) {
+    let shouldSave = false;
+
+    if (!conversation.conversationId) {
+      conversation.conversationId = legacyConversationId;
+      shouldSave = true;
+    }
+
+    if ((conversation.participants || []).length !== 2) {
+      conversation.participants = resolvedParticipants;
+      shouldSave = true;
+    }
+
+    if (!conversation.title) {
+      conversation.title = getDmConversationTitle(resolvedParticipants, currentUserId || createdBy || resolvedParticipants[0]);
+      shouldSave = true;
+    }
+
+    if (shouldSave) {
+      await conversation.save();
+    }
+
+    return conversation;
+  }
+
+  conversation = await Conversation.create({
+    conversationId: legacyConversationId,
+    type: 'internal_dm',
+    title: getDmConversationTitle(resolvedParticipants, currentUserId || createdBy || resolvedParticipants[0]),
+    participants: resolvedParticipants,
+    createdBy: createdBy || currentUserId || resolvedParticipants[0],
+  });
+
+  return conversation;
+};
+
+const ensureDmConversationForMessage = async (message) => {
+  if (!message || message.conversationType !== 'internal_dm') {
+    return null;
+  }
+
+  const participants = getSortedParticipants(
+    message.participants?.length
+      ? message.participants
+      : parseLegacyDmConversationId(message.conversationId)
+  );
+
+  if (participants.length !== 2) {
+    return null;
+  }
+
+  return ensureDmConversationRecord({
+    conversationId: message.conversationId,
+    participants,
+    createdBy: message.senderId || participants[0],
+    currentUserId: message.senderId || participants[0],
+  });
+};
+
+const mapFallbackTeam = (team) => ({
+  name: team.name,
+  slug: team.id,
+  members: team.participants,
+  createdBy: 'system',
+  isActive: true,
+  source: 'config',
+});
+
+exports.getTeams = async (req, res) => {
+  try {
+    const teams = await Team.find({ isActive: true }).sort({ name: 1 });
+
+    if (teams.length > 0) {
+      return res.json(teams);
+    }
+
+    return res.json(TEAM_CHATS.map(mapFallbackTeam));
+  } catch (error) {
+    console.error('❌ Teams fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch teams' });
+  }
+};
+
+exports.getConversationRecord = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+
+    const conversation = await Conversation.findOne({ conversationId });
+
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    return res.json(conversation);
+  } catch (error) {
+    console.error('❌ Conversation record error:', error);
+    res.status(500).json({ error: 'Failed to fetch conversation' });
+  }
+};
+
+exports.startDirectConversation = async (req, res) => {
+  try {
+    const currentUserId = normalizeUserId(req.body?.currentUserId);
+    const targetUserId = normalizeUserId(req.body?.targetUserId);
+
+    if (!currentUserId || !targetUserId || currentUserId === targetUserId) {
+      return res.status(400).json({ error: 'Invalid participants' });
+    }
+
+    const conversation = await ensureDmConversationRecord({
+      currentUserId,
+      targetUserId,
+      createdBy: currentUserId,
+    });
+
+    return res.json(conversation);
+  } catch (error) {
+    console.error('❌ Start direct conversation error:', error);
+    res.status(500).json({ error: 'Failed to start direct conversation' });
+  }
+};
+
 exports.getConversations = async (req, res) => {
   try {
     const userId = normalizeUserId(req.query.userId);
     const role = resolveRole(req.query.role);
     const conversations = buildInternalConversationMap(userId, role);
+    const dmRecords = await Conversation.find({
+      type: 'internal_dm',
+      participants: userId,
+      isArchived: false,
+    }).sort({ updatedAt: -1 });
+
+    dmRecords.forEach((conversation) => {
+      const participants = getSortedParticipants(conversation.participants);
+      const otherAgentId = participants.find((participant) => participant !== userId) || conversation.createdBy;
+      const otherAgent = getAgentMeta(otherAgentId);
+      const conversationId = conversation.conversationId || buildDmConversationId(...participants);
+
+      conversations.set(conversationId, {
+        conversationType: 'internal_dm',
+        conversationId,
+        participants,
+        name: conversation.title || otherAgent.name,
+        role: otherAgent.role,
+        agentId: otherAgentId,
+        lastMessage: conversation.lastMessagePreview || '',
+        updatedAt: conversation.lastMessageAt || conversation.updatedAt || null,
+        unread: 0,
+        isInternal: true,
+        isTeam: false,
+        previewFallback: `Message ${otherAgent.name}`,
+      });
+    });
 
     const messages = await Message.find({
       conversationType: { $in: INTERNAL_TYPES },
@@ -110,15 +323,17 @@ exports.getConversations = async (req, res) => {
 
       if (!existing) {
         if (message.conversationType === 'internal_dm') {
+          const conversationRecord = await ensureDmConversationForMessage(message);
           const participants = (message.participants || []).filter(Boolean).sort();
           const otherAgentId = participants.find((participant) => participant !== userId) || message.senderId;
           const otherAgent = getAgentMeta(otherAgentId);
+          const resolvedConversationId = conversationRecord?.conversationId || message.conversationId;
 
-          conversations.set(message.conversationId, {
+          conversations.set(resolvedConversationId, {
             conversationType: 'internal_dm',
-            conversationId: message.conversationId,
+            conversationId: resolvedConversationId,
             participants,
-            name: otherAgent.name,
+            name: conversationRecord?.title || otherAgent.name,
             role: otherAgent.role,
             agentId: otherAgentId,
             lastMessage: '',
@@ -189,7 +404,23 @@ exports.getThread = async (req, res) => {
       conversationType: { $in: INTERNAL_TYPES },
     }).sort({ createdAt: 1 });
 
-    const messageConversation = messages[0]
+    const dmConversation = conversationId.startsWith('dm:')
+      ? await ensureDmConversationRecord({
+          conversationId,
+          participants: messages[0]?.participants?.length
+            ? messages[0].participants
+            : parseLegacyDmConversationId(conversationId),
+          currentUserId: userId,
+          createdBy: messages[0]?.senderId || userId,
+        })
+      : null;
+
+    const messageConversation = dmConversation
+      ? {
+          conversationType: 'internal_dm',
+          participants: dmConversation.participants || [],
+        }
+      : messages[0]
       ? {
           conversationType: messages[0].conversationType,
           participants: messages[0].participants || [],
@@ -232,16 +463,18 @@ exports.sendMessage = async (req, res) => {
     let payload;
 
     if (conversationType === 'internal_dm') {
-      const dmParticipants = conversationId
-        .replace(/^dm:/, '')
-        .split(':')
-        .filter(Boolean)
-        .sort();
+      const dmParticipants = parseLegacyDmConversationId(conversationId);
 
       if (!dmParticipants.includes(userId) || dmParticipants.length !== 2) {
         return res.status(400).json({ error: 'Invalid direct chat' });
       }
 
+      const conversation = await ensureDmConversationRecord({
+        conversationId,
+        participants: dmParticipants,
+        currentUserId: userId,
+        createdBy: userId,
+      });
       const recipientId = dmParticipants.find((participant) => participant !== userId);
 
       payload = {
@@ -250,7 +483,7 @@ exports.sendMessage = async (req, res) => {
         body: trimmedBody,
         direction: 'outbound',
         conversationType,
-        conversationId,
+        conversationId: conversation?.conversationId || conversationId,
         participants: dmParticipants,
         senderId: userId,
         senderName: sender.name,
@@ -286,6 +519,18 @@ exports.sendMessage = async (req, res) => {
     }
 
     const saved = await Message.create(payload);
+
+    if (conversationType === 'internal_dm') {
+      await Conversation.findOneAndUpdate(
+        { conversationId: saved.conversationId, type: 'internal_dm' },
+        {
+          $set: {
+            lastMessageAt: saved.createdAt,
+            lastMessagePreview: saved.body || '',
+          },
+        }
+      );
+    }
 
     if (global.io) {
       global.io.emit('newMessage', saved);
