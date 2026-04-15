@@ -9,6 +9,7 @@ const {
 } = require('../config/chatConfig');
 
 const INTERNAL_TYPES = ['internal_dm', 'team'];
+const DEFAULT_TEAM_CREATOR = 'system';
 
 const normalizeUserId = (userId) => {
   if (!userId || !INTERNAL_AGENTS[userId]) {
@@ -20,12 +21,140 @@ const normalizeUserId = (userId) => {
 
 const resolveRole = (role) => (role === 'admin' ? 'admin' : 'agent');
 
-const getVisibleTeams = (userId, role) => {
-  if (role === 'admin') return TEAM_CHATS;
-  return TEAM_CHATS.filter((team) => team.participants.includes(userId));
+const mapConfigTeamToTeamRecord = (team) => ({
+  name: team.name,
+  slug: team.id,
+  members: team.participants,
+  createdBy: DEFAULT_TEAM_CREATOR,
+  isActive: true,
+});
+
+const mapTeamRecordToRuntime = (team) => ({
+  id: team.slug,
+  name: team.name,
+  participants: team.members || [],
+});
+
+const findConfigTeamById = (teamId) => {
+  return TEAM_CHATS.find((team) => team.id === teamId) || null;
 };
 
-const buildInternalConversationMap = (userId, role) => {
+const ensureDefaultTeams = async () => {
+  const existingCount = await Team.countDocuments({ isActive: true });
+
+  if (existingCount === 0) {
+    await Promise.all(
+      TEAM_CHATS.map((team) =>
+        Team.findOneAndUpdate(
+          { slug: team.id },
+          { $setOnInsert: mapConfigTeamToTeamRecord(team) },
+          { upsert: true, new: true }
+        )
+      )
+    );
+  }
+
+  return Team.find({ isActive: true }).sort({ name: 1 });
+};
+
+const getVisibleTeams = async (userId, role) => {
+  const teams = await ensureDefaultTeams();
+  if (role === 'admin') return teams;
+  return teams.filter((team) => (team.members || []).includes(userId));
+};
+
+const ensureTeamConversation = async (team) => {
+  if (!team) return null;
+
+  const teamId = team.slug || team.id;
+  const participants = getSortedParticipants(team.members || team.participants || []);
+  let conversation = await Conversation.findOne({
+    $or: [
+      { type: 'team', teamId },
+      { type: 'team', conversationId: teamId },
+    ],
+  }).sort({ createdAt: 1 });
+
+  if (conversation) {
+    let shouldSave = false;
+
+    if (!conversation.conversationId) {
+      conversation.conversationId = teamId;
+      shouldSave = true;
+    }
+
+    if (!conversation.title) {
+      conversation.title = team.name;
+      shouldSave = true;
+    }
+
+    if (conversation.teamId !== teamId) {
+      conversation.teamId = teamId;
+      shouldSave = true;
+    }
+
+    if ((conversation.participants || []).join('|') !== participants.join('|')) {
+      conversation.participants = participants;
+      shouldSave = true;
+    }
+
+    if (shouldSave) {
+      await conversation.save();
+    }
+
+    return conversation;
+  }
+
+  return Conversation.create({
+    conversationId: teamId,
+    type: 'team',
+    title: team.name,
+    teamId,
+    participants,
+    createdBy: team.createdBy || DEFAULT_TEAM_CREATOR,
+  });
+};
+
+const ensureTeamRecord = async ({ teamId, teamName, participants }) => {
+  const resolvedTeamId = teamId || '';
+  if (!resolvedTeamId) return null;
+
+  let team = await Team.findOne({ slug: resolvedTeamId });
+
+  if (!team) {
+    const configTeam = findConfigTeamById(resolvedTeamId);
+    const nextMembers = getSortedParticipants(participants || configTeam?.participants || []);
+    const nextName = teamName || configTeam?.name || '';
+
+    if (!nextName) {
+      return null;
+    }
+
+    team = await Team.create({
+      name: nextName,
+      slug: resolvedTeamId,
+      members: nextMembers,
+      createdBy: DEFAULT_TEAM_CREATOR,
+      isActive: true,
+    });
+  } else if (participants?.length) {
+    const nextMembers = getSortedParticipants(participants);
+    if ((team.members || []).join('|') !== nextMembers.join('|')) {
+      team.members = nextMembers;
+      await team.save();
+    }
+  }
+
+  await ensureTeamConversation(team);
+  return team;
+};
+
+const findTeamByConversationId = async (conversationId) => {
+  const teams = await ensureDefaultTeams();
+  return teams.find((team) => team.slug === conversationId) || null;
+};
+
+const buildInternalConversationMap = async (userId, role) => {
   const conversations = new Map();
 
   Object.entries(INTERNAL_AGENTS).forEach(([agentId, agent]) => {
@@ -48,10 +177,15 @@ const buildInternalConversationMap = (userId, role) => {
     });
   });
 
-  getVisibleTeams(userId, role).forEach((team) => {
-    conversations.set(team.id, {
+  const visibleTeams = await getVisibleTeams(userId, role);
+
+  for (const teamRecord of visibleTeams) {
+    const teamConversation = await ensureTeamConversation(teamRecord);
+    const team = mapTeamRecordToRuntime(teamRecord);
+
+    conversations.set(teamConversation?.conversationId || team.id, {
       conversationType: 'team',
-      conversationId: team.id,
+      conversationId: teamConversation?.conversationId || team.id,
       teamId: team.id,
       teamName: team.name,
       participants: team.participants,
@@ -64,7 +198,7 @@ const buildInternalConversationMap = (userId, role) => {
       isTeam: true,
       previewFallback: `Start the conversation in ${team.name}`,
     });
-  });
+  }
 
   return conversations;
 };
@@ -210,23 +344,14 @@ const ensureDmConversationForMessage = async (message) => {
 };
 
 const mapFallbackTeam = (team) => ({
-  name: team.name,
-  slug: team.id,
-  members: team.participants,
-  createdBy: 'system',
-  isActive: true,
+  ...mapConfigTeamToTeamRecord(team),
   source: 'config',
 });
 
 exports.getTeams = async (req, res) => {
   try {
-    const teams = await Team.find({ isActive: true }).sort({ name: 1 });
-
-    if (teams.length > 0) {
-      return res.json(teams);
-    }
-
-    return res.json(TEAM_CHATS.map(mapFallbackTeam));
+    const teams = await ensureDefaultTeams();
+    return res.json(teams.length > 0 ? teams : TEAM_CHATS.map(mapFallbackTeam));
   } catch (error) {
     console.error('❌ Teams fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch teams' });
@@ -276,7 +401,7 @@ exports.getConversations = async (req, res) => {
   try {
     const userId = normalizeUserId(req.query.userId);
     const role = resolveRole(req.query.role);
-    const conversations = buildInternalConversationMap(userId, role);
+    const conversations = await buildInternalConversationMap(userId, role);
     const dmRecords = await Conversation.find({
       type: 'internal_dm',
       participants: userId,
@@ -344,20 +469,29 @@ exports.getConversations = async (req, res) => {
             previewFallback: `Message ${otherAgent.name}`,
           });
         } else if (message.conversationType === 'team') {
-          conversations.set(message.conversationId, {
-            conversationType: 'team',
-            conversationId: message.conversationId,
+          const teamRecord = await ensureTeamRecord({
             teamId: message.teamId || message.conversationId,
             teamName: message.teamName || message.conversationId,
             participants: message.participants || [],
-            name: message.teamName || message.conversationId,
+          });
+          const teamConversation = teamRecord ? await ensureTeamConversation(teamRecord) : null;
+          const teamParticipants = getSortedParticipants(teamRecord?.members || message.participants || []);
+          const resolvedConversationId = teamConversation?.conversationId || message.conversationId;
+
+          conversations.set(resolvedConversationId, {
+            conversationType: 'team',
+            conversationId: resolvedConversationId,
+            teamId: teamRecord?.slug || message.teamId || message.conversationId,
+            teamName: teamRecord?.name || message.teamName || message.conversationId,
+            participants: teamParticipants,
+            name: teamRecord?.name || message.teamName || message.conversationId,
             role: 'Team Channel',
             lastMessage: '',
             updatedAt: null,
             unread: 0,
             isInternal: true,
             isTeam: true,
-            previewFallback: `Start the conversation in ${message.teamName || message.conversationId}`,
+            previewFallback: `Start the conversation in ${teamRecord?.name || message.teamName || message.conversationId}`,
           });
         }
       }
@@ -394,7 +528,8 @@ exports.getThread = async (req, res) => {
     const role = resolveRole(req.query.role);
     const { conversationId } = req.params;
 
-    const seeded = buildInternalConversationMap(userId, role).get(conversationId);
+    const seededMap = await buildInternalConversationMap(userId, role);
+    const seeded = seededMap.get(conversationId);
     if (!seeded && !conversationId) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
@@ -415,10 +550,27 @@ exports.getThread = async (req, res) => {
         })
       : null;
 
+    const teamRecord = !dmConversation
+      ? await findTeamByConversationId(conversationId)
+        || await ensureTeamRecord({
+          teamId: messages[0]?.teamId || conversationId,
+          teamName: messages[0]?.teamName,
+          participants: messages[0]?.participants || [],
+        })
+      : null;
+    const teamConversation = teamRecord
+      ? await ensureTeamConversation(teamRecord)
+      : null;
+
     const messageConversation = dmConversation
       ? {
           conversationType: 'internal_dm',
           participants: dmConversation.participants || [],
+        }
+      : teamConversation
+      ? {
+          conversationType: 'team',
+          participants: teamConversation.participants || [],
         }
       : messages[0]
       ? {
@@ -493,21 +645,27 @@ exports.sendMessage = async (req, res) => {
         readBy: [userId],
       };
     } else {
-      const team = TEAM_CHATS.find((item) => item.id === conversationId);
+      const team = await ensureTeamRecord({
+        teamId: conversationId,
+        teamName: req.body?.teamName,
+      });
 
       if (!team) {
         return res.status(400).json({ error: 'Unknown team chat' });
       }
 
+      const teamConversation = await ensureTeamConversation(team);
+      const teamMembers = getSortedParticipants(team.members || []);
+
       payload = {
         from: userId,
-        to: team.id,
+        to: team.slug,
         body: trimmedBody,
         direction: 'outbound',
         conversationType,
-        conversationId: team.id,
-        participants: team.participants,
-        teamId: team.id,
+        conversationId: teamConversation?.conversationId || team.slug,
+        participants: teamMembers,
+        teamId: team.slug,
         teamName: team.name,
         senderId: userId,
         senderName: sender.name,
@@ -520,9 +678,9 @@ exports.sendMessage = async (req, res) => {
 
     const saved = await Message.create(payload);
 
-    if (conversationType === 'internal_dm') {
+    if (conversationType === 'internal_dm' || conversationType === 'team') {
       await Conversation.findOneAndUpdate(
-        { conversationId: saved.conversationId, type: 'internal_dm' },
+        { conversationId: saved.conversationId, type: conversationType },
         {
           $set: {
             lastMessageAt: saved.createdAt,
