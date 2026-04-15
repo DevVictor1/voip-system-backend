@@ -69,13 +69,17 @@ const buildInternalConversationMap = (userId, role) => {
 
 const isConversationVisible = (conversation, userId, role) => {
   if (!conversation) return false;
-  if (role === 'admin') return true;
 
-  if (conversation.conversationType === 'team') {
+  if (conversation.conversationType === 'internal_dm') {
     return (conversation.participants || []).includes(userId);
   }
 
-  return (conversation.participants || []).includes(userId);
+  if (conversation.conversationType === 'team') {
+    if (role === 'admin') return true;
+    return (conversation.participants || []).includes(userId);
+  }
+
+  return role === 'admin';
 };
 
 const buildMessageDirection = (message, userId) => {
@@ -93,6 +97,15 @@ exports.getConversations = async (req, res) => {
     }).sort({ createdAt: -1 });
 
     for (const message of messages) {
+      const messageConversation = {
+        conversationType: message.conversationType,
+        participants: message.participants || [],
+      };
+
+      if (!isConversationVisible(messageConversation, userId, role)) {
+        continue;
+      }
+
       const existing = conversations.get(message.conversationId);
 
       if (!existing) {
@@ -176,7 +189,14 @@ exports.getThread = async (req, res) => {
       conversationType: { $in: INTERNAL_TYPES },
     }).sort({ createdAt: 1 });
 
-    if (seeded && !isConversationVisible(seeded, userId, role)) {
+    const messageConversation = messages[0]
+      ? {
+          conversationType: messages[0].conversationType,
+          participants: messages[0].participants || [],
+        }
+      : seeded;
+
+    if (messageConversation && !isConversationVisible(messageConversation, userId, role)) {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
