@@ -85,9 +85,9 @@ exports.handleIVR = async (req, res) => {
     });
 
     const teams = {
-      '1': ['agent_1', 'agent_2'], // Tech
-      '2': ['agent_3'],           // Support
-      '3': ['agent_4', 'agent_5'] // Sales
+      '1': ['agent_1'], // Tech Support -> John Doe
+      '2': ['agent_2'], // Customer Service -> Sarah Lee
+      '3': ['agent_3']  // Sales -> Mike Chen
     };
 
     const selectedTeam = teams[digit] || [];
