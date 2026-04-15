@@ -6,8 +6,44 @@ const messageSchema = new mongoose.Schema(
 
     from: String,
     to: String,
+    fromFull: String,
+    toFull: String,
     body: String,
     direction: String,
+    conversationType: {
+      type: String,
+      default: 'customer',
+      enum: ['customer', 'internal_dm', 'team'],
+    },
+    conversationId: {
+      type: String,
+      default: '',
+      index: true,
+    },
+    participants: {
+      type: [String],
+      default: [],
+    },
+    teamId: {
+      type: String,
+      default: null,
+    },
+    teamName: {
+      type: String,
+      default: null,
+    },
+    senderId: {
+      type: String,
+      default: null,
+    },
+    senderName: {
+      type: String,
+      default: null,
+    },
+    source: {
+      type: String,
+      default: 'sms',
+    },
     media: {
       type: [String],
       default: [],
@@ -16,6 +52,10 @@ const messageSchema = new mongoose.Schema(
     read: {
       type: Boolean,
       default: false,
+    },
+    readBy: {
+      type: [String],
+      default: [],
     },
 
     // ðŸ“Š DELIVERY STATUS

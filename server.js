@@ -8,6 +8,7 @@ const axios = require('axios');
 const connectDB = require('./config/db');
 const callRoutes = require('./routes/callRoutes');
 const smsRoutes = require('./routes/smsRoutes');
+const messageRoutes = require('./routes/messageRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const voiceRoutes = require('./routes/voiceRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
@@ -42,6 +43,7 @@ app.use('/uploads', express.static('uploads'));
 // ✅ ROUTES
 app.use('/api/calls', callRoutes);
 app.use('/api/sms', smsRoutes);
+app.use('/api/messages', messageRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/voice', voiceRoutes);
 app.use('/api/dashboard', dashboardRoutes);

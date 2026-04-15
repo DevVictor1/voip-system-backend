@@ -29,26 +29,30 @@ const formatToE164 = (input) => {
   }
 };
 
-// 🔥 NORMALIZE (SAFE)
 const normalize = (num) => {
   if (!num) return '';
   return num.replace(/\D/g, '').slice(-10);
 };
 
-// 🔍 FIND CONTACT
+const CUSTOMER_MESSAGE_QUERY = {
+  $or: [
+    { conversationType: { $exists: false } },
+    { conversationType: 'customer' },
+  ],
+};
+
 const findContactByPhone = async (phone) => {
   const normalized = normalize(phone);
 
-  return await Contact.findOne({
+  return Contact.findOne({
     'phones.number': normalized,
   });
 };
 
-// 📩 RECEIVE SMS
 exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
-    const numMedia = parseInt(req.body.NumMedia || '0');
+    const numMedia = parseInt(req.body.NumMedia || '0', 10);
     const media = [];
 
     if (numMedia > 0) {
@@ -57,16 +61,19 @@ exports.receiveSMS = async (req, res) => {
       }
     }
 
-    console.log('📩 INCOMING SMS:', From, Body);
+    console.log('Incoming SMS:', From, Body);
 
     const message = await Message.create({
       from: normalize(From),
       to: normalize(To),
-      fromFull: From,     // 🔥 KEEP ORIGINAL
-      toFull: To,         // 🔥 KEEP ORIGINAL
+      fromFull: From,
+      toFull: To,
       body: Body,
       media,
       direction: 'inbound',
+      conversationType: 'customer',
+      conversationId: normalize(From),
+      source: 'sms',
       read: false,
       status: 'received',
     });
@@ -77,12 +84,11 @@ exports.receiveSMS = async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error('❌ RECEIVE ERROR:', error);
+    console.error('RECEIVE ERROR:', error);
     res.sendStatus(500);
   }
 };
 
-// 📤 SEND SMS
 exports.sendSMS = async (req, res) => {
   try {
     const { to, body, message, mediaUrl } = req.body;
@@ -114,7 +120,7 @@ exports.sendSMS = async (req, res) => {
 
     const baseUrl = process.env.BASE_URL?.trim();
     if (baseUrl) {
-      payload.statusCallback = baseUrl + '/api/sms/status';
+      payload.statusCallback = `${baseUrl}/api/sms/status`;
     }
 
     const twilioRes = await client.messages.create(payload);
@@ -128,6 +134,9 @@ exports.sendSMS = async (req, res) => {
       body: text,
       media: mediaList || [],
       direction: 'outbound',
+      conversationType: 'customer',
+      conversationId: normalizedTo,
+      source: 'sms',
       status: twilioRes.status || 'queued',
       read: true,
     });
@@ -137,15 +146,12 @@ exports.sendSMS = async (req, res) => {
     }
 
     res.json(saved);
-
   } catch (error) {
-    console.error(error);
     console.error('SEND ERROR:', error);
     res.status(500).json({ error: 'Send failed' });
   }
 };
 
-// 📊 STATUS CALLBACK
 exports.smsStatusCallback = async (req, res) => {
   try {
     const { MessageSid, MessageStatus } = req.body;
@@ -158,30 +164,26 @@ exports.smsStatusCallback = async (req, res) => {
     if (global.io) {
       global.io.emit('messageStatus', {
         sid: MessageSid,
-        status: MessageStatus
+        status: MessageStatus,
       });
     }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('❌ STATUS ERROR:', err);
+    console.error('STATUS ERROR:', err);
     res.sendStatus(500);
   }
 };
 
-// 📚 GET CONVERSATIONS
 exports.getConversations = async (req, res) => {
   try {
-    const messages = await Message.find().sort({ createdAt: -1 });
-
+    const messages = await Message.find(CUSTOMER_MESSAGE_QUERY).sort({ createdAt: -1 });
     const conversations = {};
 
     for (const msg of messages) {
-      const isOutgoing =
-        msg.from === normalize(process.env.TWILIO_PHONE_NUMBER);
-
+      const isOutgoing = msg.from === normalize(process.env.TWILIO_PHONE_NUMBER);
       const phone = isOutgoing ? msg.to : msg.from;
-      const key = normalize(phone);
+      const key = normalize(msg.conversationId || phone);
 
       if (!conversations[key]) {
         const contact = await findContactByPhone(key);
@@ -189,7 +191,7 @@ exports.getConversations = async (req, res) => {
         conversations[key] = {
           phone: key,
           name: contact
-            ? `${contact.firstName} ${contact.lastName}`
+            ? `${contact.firstName} ${contact.lastName}`.trim()
             : key,
           lastMessage: msg.body,
           updatedAt: msg.createdAt,
@@ -203,40 +205,39 @@ exports.getConversations = async (req, res) => {
     }
 
     res.json(Object.values(conversations));
-
   } catch (error) {
-    console.error('❌ Conversations error:', error);
+    console.error('Conversations error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// 💬 GET MESSAGES
 exports.getMessages = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
 
     const messages = await Message.find({
+      ...CUSTOMER_MESSAGE_QUERY,
       $or: [
         { from: normalized },
         { to: normalized },
+        { conversationId: normalized },
       ],
     }).sort({ createdAt: 1 });
 
     res.json(messages);
-
   } catch (error) {
-    console.error('❌ Messages error:', error);
+    console.error('Messages error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// ✅ MARK AS READ
 exports.markAsRead = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
 
     await Message.updateMany(
       {
+        ...CUSTOMER_MESSAGE_QUERY,
         from: normalized,
         read: false,
       },
@@ -244,14 +245,12 @@ exports.markAsRead = async (req, res) => {
     );
 
     res.json({ success: true });
-
   } catch (error) {
-    console.error('❌ Read error:', error);
+    console.error('Read error:', error);
     res.status(500).json({ error: 'Failed' });
   }
 };
 
-// 🧹 CLEAR
 exports.clearMessages = async (req, res) => {
   try {
     await Message.deleteMany({});
@@ -261,7 +260,6 @@ exports.clearMessages = async (req, res) => {
   }
 };
 
-// 📎 UPLOAD MEDIA
 exports.uploadMedia = async (req, res) => {
   try {
     if (!req.file) {
@@ -275,17 +273,7 @@ exports.uploadMedia = async (req, res) => {
 
     res.json({ url });
   } catch (error) {
-    console.error('❌ Upload error:', error);
+    console.error('Upload error:', error);
     res.status(500).json({ error: 'Upload failed' });
   }
 };
-
-
-
-
-
-
-
-
-
-
