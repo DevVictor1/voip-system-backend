@@ -34,6 +34,13 @@ const normalize = (num) => {
   return num.replace(/\D/g, '').slice(-10);
 };
 
+const ensureAbsoluteHttpsUrl = (value) => {
+  const trimmed = value?.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+};
+
 const CUSTOMER_MESSAGE_QUERY = {
   $or: [
     { conversationType: { $exists: false } },
@@ -118,7 +125,7 @@ exports.sendSMS = async (req, res) => {
       mediaUrl: mediaList,
     };
 
-    const baseUrl = process.env.BASE_URL?.trim();
+    const baseUrl = ensureAbsoluteHttpsUrl(process.env.BASE_URL);
     if (baseUrl) {
       payload.statusCallback = `${baseUrl}/api/sms/status`;
     }
@@ -266,7 +273,7 @@ exports.uploadMedia = async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const baseUrl = process.env.BASE_URL?.trim()
+    const baseUrl = ensureAbsoluteHttpsUrl(process.env.BASE_URL)
       || `${req.protocol}://${req.get('host')}`;
 
     const url = `${baseUrl}/uploads/${req.file.filename}`;
