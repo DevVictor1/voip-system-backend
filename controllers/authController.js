@@ -24,6 +24,33 @@ const signToken = (user) => {
 
 const sanitizeUser = (user) => user.toSafeObject();
 
+const normalizeRole = (role) => {
+  if (role === 'admin' || role === 'agent') {
+    return role;
+  }
+
+  return '';
+};
+
+const buildUserPayload = ({
+  name,
+  email,
+  role,
+  agentId,
+  isActive,
+}) => {
+  const normalizedRole = normalizeRole(role);
+  const normalizedAgentId = agentId ? String(agentId).trim() : null;
+
+  return {
+    name: String(name || '').trim(),
+    email: String(email || '').trim().toLowerCase(),
+    role: normalizedRole,
+    agentId: normalizedRole === 'agent' ? normalizedAgentId : normalizedAgentId,
+    isActive: isActive === false ? false : true,
+  };
+};
+
 exports.login = async (req, res) => {
   try {
     if (!getJwtSecret()) {
@@ -134,33 +161,25 @@ exports.listUsers = async (_req, res) => {
 
 exports.createUser = async (req, res) => {
   try {
-    const name = String(req.body?.name || '').trim();
-    const email = String(req.body?.email || '').trim().toLowerCase();
+    const payload = buildUserPayload(req.body || {});
     const password = String(req.body?.password || '');
-    const role = req.body?.role === 'admin' ? 'admin' : req.body?.role === 'agent' ? 'agent' : '';
-    const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
-    const isActive = req.body?.isActive === false ? false : true;
 
-    if (!name || !email || !password || !role) {
+    if (!payload.name || !payload.email || !password || !payload.role) {
       return res.status(400).json({ error: 'Name, email, password, and role are required' });
     }
 
-    if (role === 'agent' && !agentId) {
+    if (payload.role === 'agent' && !payload.agentId) {
       return res.status(400).json({ error: 'agentId is required for agent users' });
     }
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: payload.email });
     if (existingUser) {
       return res.status(409).json({ error: 'User already exists' });
     }
 
     const user = await User.create({
-      name,
-      email,
+      ...payload,
       password,
-      role,
-      agentId: role === 'admin' ? agentId : agentId,
-      isActive,
     });
 
     return res.status(201).json({
@@ -169,6 +188,118 @@ exports.createUser = async (req, res) => {
   } catch (error) {
     console.error('Auth create user error:', error);
     return res.status(500).json({ error: 'Failed to create user' });
+  }
+};
+
+exports.getUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json({
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Auth get user error:', error);
+    return res.status(500).json({ error: 'Failed to fetch user' });
+  }
+};
+
+exports.updateUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const payload = buildUserPayload({
+      ...user.toObject(),
+      ...req.body,
+    });
+
+    if (!payload.name || !payload.email || !payload.role) {
+      return res.status(400).json({ error: 'Name, email, and role are required' });
+    }
+
+    if (payload.role === 'agent' && !payload.agentId) {
+      return res.status(400).json({ error: 'agentId is required for agent users' });
+    }
+
+    const existingUser = await User.findOne({
+      email: payload.email,
+      _id: { $ne: user._id },
+    });
+
+    if (existingUser) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
+
+    user.name = payload.name;
+    user.email = payload.email;
+    user.role = payload.role;
+    user.agentId = payload.agentId;
+    user.isActive = payload.isActive;
+
+    await user.save();
+
+    return res.json({
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Auth update user error:', error);
+    return res.status(500).json({ error: 'Failed to update user' });
+  }
+};
+
+exports.resetUserPassword = async (req, res) => {
+  try {
+    const password = String(req.body?.password || '');
+
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const user = await User.findById(req.params.id).select('+password');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    user.password = password;
+    await user.save();
+
+    return res.json({
+      user: sanitizeUser(user),
+      message: 'Password reset successfully',
+    });
+  } catch (error) {
+    console.error('Auth reset password error:', error);
+    return res.status(500).json({ error: 'Failed to reset password' });
+  }
+};
+
+exports.deleteUser = async (req, res) => {
+  try {
+    if (String(req.user?._id) === String(req.params.id)) {
+      return res.status(400).json({ error: 'You cannot delete your own account' });
+    }
+
+    const user = await User.findByIdAndDelete(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json({
+      success: true,
+    });
+  } catch (error) {
+    console.error('Auth delete user error:', error);
+    return res.status(500).json({ error: 'Failed to delete user' });
   }
 };
 
