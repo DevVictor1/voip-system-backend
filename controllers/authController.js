@@ -24,6 +24,36 @@ const signToken = (user) => {
 
 const sanitizeUser = (user) => user.toSafeObject();
 
+const isDuplicateKeyError = (error) => error?.code === 11000;
+
+const buildDuplicateErrorMessage = (error) => {
+  const duplicateFields = error?.keyPattern || {};
+
+  if (duplicateFields.agentId) {
+    return 'agentId is already in use';
+  }
+
+  if (duplicateFields.email) {
+    return 'User already exists';
+  }
+
+  return 'Duplicate value';
+};
+
+const findExistingAgentUser = (agentId, excludeUserId) => {
+  if (!agentId) {
+    return null;
+  }
+
+  const query = { agentId };
+
+  if (excludeUserId) {
+    query._id = { $ne: excludeUserId };
+  }
+
+  return User.findOne(query);
+};
+
 const normalizeRole = (role) => {
   if (role === 'admin' || role === 'agent') {
     return role;
@@ -127,6 +157,11 @@ exports.bootstrapUser = async (req, res) => {
       return res.status(409).json({ error: 'User already exists' });
     }
 
+    const existingAgentUser = await findExistingAgentUser(agentId);
+    if (existingAgentUser) {
+      return res.status(409).json({ error: 'agentId is already in use' });
+    }
+
     const user = await User.create({
       name,
       email,
@@ -141,6 +176,9 @@ exports.bootstrapUser = async (req, res) => {
     });
   } catch (error) {
     console.error('Auth bootstrap error:', error);
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({ error: buildDuplicateErrorMessage(error) });
+    }
     return res.status(500).json({ error: 'Failed to create user' });
   }
 };
@@ -177,6 +215,11 @@ exports.createUser = async (req, res) => {
       return res.status(409).json({ error: 'User already exists' });
     }
 
+    const existingAgentUser = await findExistingAgentUser(payload.agentId);
+    if (existingAgentUser) {
+      return res.status(409).json({ error: 'agentId is already in use' });
+    }
+
     const user = await User.create({
       ...payload,
       password,
@@ -187,6 +230,9 @@ exports.createUser = async (req, res) => {
     });
   } catch (error) {
     console.error('Auth create user error:', error);
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({ error: buildDuplicateErrorMessage(error) });
+    }
     return res.status(500).json({ error: 'Failed to create user' });
   }
 };
@@ -238,6 +284,11 @@ exports.updateUser = async (req, res) => {
       return res.status(409).json({ error: 'User already exists' });
     }
 
+    const existingAgentUser = await findExistingAgentUser(payload.agentId, user._id);
+    if (existingAgentUser) {
+      return res.status(409).json({ error: 'agentId is already in use' });
+    }
+
     user.name = payload.name;
     user.email = payload.email;
     user.role = payload.role;
@@ -251,6 +302,9 @@ exports.updateUser = async (req, res) => {
     });
   } catch (error) {
     console.error('Auth update user error:', error);
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({ error: buildDuplicateErrorMessage(error) });
+    }
     return res.status(500).json({ error: 'Failed to update user' });
   }
 };

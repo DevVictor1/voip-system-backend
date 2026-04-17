@@ -41,6 +41,14 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+userSchema.index(
+  { agentId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { agentId: { $type: 'string' } },
+  }
+);
+
 userSchema.pre('save', async function hashPassword() {
   if (!this.isModified('password')) {
     return;
