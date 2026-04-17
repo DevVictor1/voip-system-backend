@@ -13,6 +13,7 @@ const contactRoutes = require('./routes/contactRoutes');
 const voiceRoutes = require('./routes/voiceRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const numberRoutes = require('./routes/numberRoutes');
+const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 
@@ -48,6 +49,7 @@ app.use('/api/contacts', contactRoutes);
 app.use('/api/voice', voiceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/numbers', numberRoutes);
+app.use('/api/auth', authRoutes);
 
 // 🔥 RECORDING PROXY
 app.get('/api/recordings/:sid', async (req, res) => {
