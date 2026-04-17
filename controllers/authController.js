@@ -118,4 +118,58 @@ exports.bootstrapUser = async (req, res) => {
   }
 };
 
+exports.listUsers = async (_req, res) => {
+  try {
+    const users = await User.find({})
+      .sort({ createdAt: -1 });
+
+    return res.json({
+      users: users.map(sanitizeUser),
+    });
+  } catch (error) {
+    console.error('Auth list users error:', error);
+    return res.status(500).json({ error: 'Failed to fetch users' });
+  }
+};
+
+exports.createUser = async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    const role = req.body?.role === 'admin' ? 'admin' : req.body?.role === 'agent' ? 'agent' : '';
+    const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
+    const isActive = req.body?.isActive === false ? false : true;
+
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({ error: 'Name, email, password, and role are required' });
+    }
+
+    if (role === 'agent' && !agentId) {
+      return res.status(400).json({ error: 'agentId is required for agent users' });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
+
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role,
+      agentId: role === 'admin' ? agentId : agentId,
+      isActive,
+    });
+
+    return res.status(201).json({
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error('Auth create user error:', error);
+    return res.status(500).json({ error: 'Failed to create user' });
+  }
+};
+
 exports.signToken = signToken;
