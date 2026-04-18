@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const TEAM_DEPARTMENTS = ['tech', 'support', 'sales'];
 
 const teamSchema = new mongoose.Schema(
   {
@@ -16,6 +17,12 @@ const teamSchema = new mongoose.Schema(
     members: {
       type: [String],
       default: [],
+    },
+    department: {
+      type: String,
+      enum: TEAM_DEPARTMENTS,
+      default: null,
+      trim: true,
     },
     createdBy: {
       type: String,

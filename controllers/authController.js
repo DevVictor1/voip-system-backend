@@ -28,6 +28,7 @@ const sanitizeTeammate = (user) => ({
   name: user.name,
   role: user.role,
   agentId: user.agentId,
+  department: user.department,
   isActive: user.isActive,
 });
 
@@ -69,21 +70,38 @@ const normalizeRole = (role) => {
   return '';
 };
 
+const normalizeDepartment = (department) => {
+  const normalized = String(department || '').trim().toLowerCase();
+  if (['tech', 'support', 'sales'].includes(normalized)) {
+    return normalized;
+  }
+
+  return null;
+};
+
+const hasInvalidDepartmentInput = (department) => {
+  if (department === undefined || department === null) return false;
+  return String(department).trim() !== '' && !normalizeDepartment(department);
+};
+
 const buildUserPayload = ({
   name,
   email,
   role,
   agentId,
+  department,
   isActive,
 }) => {
   const normalizedRole = normalizeRole(role);
   const normalizedAgentId = agentId ? String(agentId).trim() : null;
+  const normalizedDepartment = normalizeDepartment(department);
 
   return {
     name: String(name || '').trim(),
     email: String(email || '').trim().toLowerCase(),
     role: normalizedRole,
     agentId: normalizedRole === 'agent' ? normalizedAgentId : normalizedAgentId,
+    department: normalizedDepartment,
     isActive: isActive === false ? false : true,
   };
 };
@@ -143,7 +161,7 @@ exports.listTeammates = async (req, res) => {
       agentId: { $type: 'string', $ne: '' },
       _id: { $ne: currentUserId },
     })
-      .select('name role agentId isActive')
+      .select('name role agentId department isActive')
       .sort({ name: 1 });
 
     return res.json({
@@ -174,9 +192,14 @@ exports.bootstrapUser = async (req, res) => {
     const name = String(req.body?.name || '').trim();
     const role = req.body?.role === 'admin' ? 'admin' : 'agent';
     const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
+    const department = normalizeDepartment(req.body?.department);
 
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+
+    if (hasInvalidDepartmentInput(req.body?.department)) {
+      return res.status(400).json({ error: 'Invalid department' });
     }
 
     const existingUser = await User.findOne({ email });
@@ -195,6 +218,7 @@ exports.bootstrapUser = async (req, res) => {
       password,
       role,
       agentId,
+      department,
       isActive: true,
     });
 
@@ -231,6 +255,10 @@ exports.createUser = async (req, res) => {
 
     if (!payload.name || !payload.email || !password || !payload.role) {
       return res.status(400).json({ error: 'Name, email, password, and role are required' });
+    }
+
+    if (hasInvalidDepartmentInput(req.body?.department)) {
+      return res.status(400).json({ error: 'Invalid department' });
     }
 
     if (payload.role === 'agent' && !payload.agentId) {
@@ -298,6 +326,10 @@ exports.updateUser = async (req, res) => {
       return res.status(400).json({ error: 'Name, email, and role are required' });
     }
 
+    if (hasInvalidDepartmentInput(req.body?.department)) {
+      return res.status(400).json({ error: 'Invalid department' });
+    }
+
     if (payload.role === 'agent' && !payload.agentId) {
       return res.status(400).json({ error: 'agentId is required for agent users' });
     }
@@ -320,6 +352,7 @@ exports.updateUser = async (req, res) => {
     user.email = payload.email;
     user.role = payload.role;
     user.agentId = payload.agentId;
+    user.department = payload.department;
     user.isActive = payload.isActive;
 
     await user.save();

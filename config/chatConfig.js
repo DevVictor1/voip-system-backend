@@ -10,16 +10,19 @@ const TEAM_CHANNELS = [
   {
     id: 'team_tech',
     name: 'Tech Support Team',
+    department: 'tech',
     members: ['agent_1', 'agent_2'],
   },
   {
     id: 'team_support',
     name: 'Customer Support Team',
+    department: 'support',
     members: ['agent_3'],
   },
   {
     id: 'team_sales',
     name: 'Sales Team',
+    department: 'sales',
     members: ['agent_4', 'agent_5'],
   },
 ];

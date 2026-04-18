@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const USER_ROLES = ['admin', 'agent'];
+const USER_DEPARTMENTS = ['tech', 'support', 'sales'];
 const SALT_ROUNDS = 10;
 
 const userSchema = new mongoose.Schema(
@@ -30,6 +31,12 @@ const userSchema = new mongoose.Schema(
     },
     agentId: {
       type: String,
+      default: null,
+      trim: true,
+    },
+    department: {
+      type: String,
+      enum: USER_DEPARTMENTS,
       default: null,
       trim: true,
     },
@@ -68,6 +75,7 @@ userSchema.methods.toSafeObject = function toSafeObject() {
     email: this.email,
     role: this.role,
     agentId: this.agentId,
+    department: this.department,
     isActive: this.isActive,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,

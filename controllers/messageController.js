@@ -1,6 +1,7 @@
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
+const User = require('../models/User');
 const {
   INTERNAL_AGENTS,
   TEAM_CHANNELS,
@@ -17,11 +18,16 @@ const normalizeUserId = (userId) => {
 };
 
 const resolveRole = (role) => (role === 'admin' ? 'admin' : 'agent');
+const normalizeDepartment = (department) => {
+  const normalized = String(department || '').trim().toLowerCase();
+  return ['tech', 'support', 'sales'].includes(normalized) ? normalized : '';
+};
 
 const mapConfigTeamToTeamRecord = (team) => ({
   name: team.name,
   slug: team.id,
   members: team.members,
+  department: normalizeDepartment(team.department),
   createdBy: DEFAULT_TEAM_CREATOR,
   isActive: true,
 });
@@ -30,6 +36,7 @@ const mapTeamRecordToRuntime = (team) => ({
   id: team.slug,
   name: team.name,
   participants: team.members || [],
+  department: normalizeDepartment(team.department),
 });
 
 const findConfigTeamById = (teamId) => {
@@ -64,17 +71,53 @@ const ensureDefaultTeams = async () => {
   return Team.find({ isActive: true }).sort({ name: 1 });
 };
 
+const cloneTeamRecordWithMembers = (team, members) => {
+  const record = typeof team?.toObject === 'function' ? team.toObject() : { ...(team || {}) };
+  return {
+    ...record,
+    members,
+    participants: members,
+    department: normalizeDepartment(record.department),
+  };
+};
+
+const resolveTeamMembers = async (team) => {
+  const fallbackMembers = team?.members || team?.participants || [];
+  const department = normalizeDepartment(team?.department);
+
+  if (!department) {
+    return getSortedParticipants(fallbackMembers);
+  }
+
+  const departmentUsers = await User.find({
+    department,
+    isActive: true,
+    agentId: { $type: 'string', $ne: '' },
+  })
+    .select('agentId')
+    .sort({ name: 1 });
+
+  return getSortedParticipants([
+    ...fallbackMembers,
+    ...departmentUsers.map((user) => user.agentId).filter(Boolean),
+  ]);
+};
+
 const getVisibleTeams = async (userId, role) => {
   const teams = await ensureDefaultTeams();
-  if (role === 'admin') return teams;
-  return teams.filter((team) => (team.members || []).includes(userId));
+  const resolvedTeams = await Promise.all(
+    teams.map(async (team) => cloneTeamRecordWithMembers(team, await resolveTeamMembers(team)))
+  );
+
+  if (role === 'admin') return resolvedTeams;
+  return resolvedTeams.filter((team) => (team.members || []).includes(userId));
 };
 
 const ensureTeamConversation = async (team) => {
   if (!team) return null;
 
   const teamId = team.slug || team.id;
-  const participants = getSortedParticipants(team.members || team.participants || []);
+  const participants = await resolveTeamMembers(team);
   let conversation = await Conversation.findOne({
     $or: [
       { type: 'team', teamId },
@@ -132,6 +175,7 @@ const ensureTeamRecord = async ({ teamId, teamName, participants }) => {
     const configTeam = findConfigTeamById(resolvedTeamId);
     const nextMembers = getSortedParticipants(participants || configTeam?.members || []);
     const nextName = teamName || configTeam?.name || '';
+    const nextDepartment = normalizeDepartment(configTeam?.department);
 
     if (!nextName) {
       return null;
@@ -141,6 +185,7 @@ const ensureTeamRecord = async ({ teamId, teamName, participants }) => {
       name: nextName,
       slug: resolvedTeamId,
       members: nextMembers,
+      department: nextDepartment || null,
       createdBy: DEFAULT_TEAM_CREATOR,
       isActive: true,
     });
@@ -158,7 +203,10 @@ const ensureTeamRecord = async ({ teamId, teamName, participants }) => {
 
 const findTeamByConversationId = async (conversationId) => {
   const teams = await ensureDefaultTeams();
-  return teams.find((team) => team.slug === conversationId) || null;
+  const team = teams.find((item) => item.slug === conversationId) || null;
+  if (!team) return null;
+
+  return cloneTeamRecordWithMembers(team, await resolveTeamMembers(team));
 };
 
 const syncConversationSummary = async (conversationId, type, conversationRecord = null) => {
@@ -744,7 +792,7 @@ exports.sendMessage = async (req, res) => {
       }
 
       const teamConversation = await ensureTeamConversation(team);
-      const teamMembers = getSortedParticipants(team.members || []);
+      const teamMembers = await resolveTeamMembers(team);
 
       payload = {
         from: userId,
