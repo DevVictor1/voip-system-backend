@@ -1,7 +1,11 @@
 ﻿const Call = require('../models/Call');
 const Contact = require('../models/Contact');
+const User = require('../models/User');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
-const lastAgentIndexByTeam = {};
+const {
+  INTERNAL_AGENTS,
+  IVR_DEPARTMENT_ROUTES,
+} = require('../config/chatConfig');
 
 const normalizeLang = (lang) => (lang === 'vi' ? 'vi' : 'en');
 
@@ -33,12 +37,73 @@ const PROMPTS = {
 
 const buildIvrUrl = (step, lang) => `/api/calls/ivr?step=${step}&lang=${normalizeLang(lang)}`;
 
-const pickNextAgent = (teamKey, agents) => {
-  if (!agents.length) return null;
-  const lastIndex = lastAgentIndexByTeam[teamKey] ?? -1;
-  const nextIndex = (lastIndex + 1) % agents.length;
-  lastAgentIndexByTeam[teamKey] = nextIndex;
-  return agents[nextIndex];
+const isAgentAvailable = (agentId) => {
+  return Boolean(
+    agentId
+    && global.connectedUsers?.[agentId]
+    && global.agentStatus?.[agentId] === 'online'
+  );
+};
+
+const dedupeAgentIds = (agentIds = []) => {
+  return [...new Set(agentIds.filter(Boolean))];
+};
+
+const resolveEligibleDepartmentUsers = async (department) => {
+  if (!department) {
+    return [];
+  }
+
+  const users = await User.find({
+    role: 'agent',
+    department,
+    isActive: true,
+    agentId: { $type: 'string', $ne: '' },
+  })
+    .select('name agentId department isActive')
+    .sort({ name: 1, createdAt: 1 });
+
+  const seenAgentIds = new Set();
+
+  return users.filter((user) => {
+    if (!user?.agentId || seenAgentIds.has(user.agentId)) {
+      return false;
+    }
+
+    seenAgentIds.add(user.agentId);
+    return true;
+  });
+};
+
+const selectQueueTarget = (users = []) => {
+  return users.find((user) => isAgentAvailable(user?.agentId)) || null;
+};
+
+const resolveLegacyFallbackAgents = (routeConfig) => {
+  const fallbackAgents = dedupeAgentIds(routeConfig?.fallbackAgents || []);
+  return fallbackAgents.filter((agentId) => INTERNAL_AGENTS[agentId]);
+};
+
+const emitIncomingCallPopup = ({ agentId, CallSid, From, To, contact }) => {
+  const socketId = global.connectedUsers?.[agentId];
+
+  if (!socketId || !global.io) {
+    return;
+  }
+
+  global.io.to(socketId).emit('incomingCall', {
+    callSid: CallSid,
+    from: From,
+    to: To,
+    contact: contact
+      ? {
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          dba: contact.dba,
+          mid: contact.mid || ''
+        }
+      : null
+  });
 };
 
 // NORMALIZE
@@ -131,32 +196,58 @@ exports.handleIVR = async (req, res) => {
       'phones.number': { $regex: From.slice(-10) }
     });
 
-    const teams = {
-      '1': ['agent_1'], // Tech Support -> John Doe
-      '2': ['agent_2'], // Customer Service -> Sarah Lee
-      '3': ['agent_3']  // Sales -> Mike Chen
-    };
+    const routeConfig = IVR_DEPARTMENT_ROUTES[digit];
 
-    const selectedTeam = teams[digit] || [];
+    if (!routeConfig) {
+      twiml.say(sayOptions, prompts.departmentRetry);
+      twiml.redirect(buildIvrUrl('dept', currentLang));
+      return res.type('text/xml').send(twiml.toString());
+    }
 
-    // ✅ FILTER ONLY ONLINE AGENTS
-    const availableAgents = selectedTeam.filter(
-      (agent) =>
-        global.connectedUsers?.[agent] &&
-        global.agentStatus?.[agent] === 'online'
+    const eligibleDepartmentUsers = await resolveEligibleDepartmentUsers(routeConfig.department);
+    const availableDepartmentUsers = eligibleDepartmentUsers.filter((user) => isAgentAvailable(user.agentId));
+    const queueTarget = selectQueueTarget(eligibleDepartmentUsers);
+
+    console.log(
+      '[IVR queue]',
+      JSON.stringify({
+        digit,
+        department: routeConfig.department,
+        eligibleUsers: eligibleDepartmentUsers.map((user) => ({
+          id: String(user._id),
+          name: user.name,
+          agentId: user.agentId,
+        })),
+        availableUsers: availableDepartmentUsers.map((user) => user.agentId),
+        selectedTarget: queueTarget?.agentId || null,
+      })
     );
-    const agentToDial = pickNextAgent(digit, availableAgents);
+
+    let agentToDial = queueTarget?.agentId || '';
+    let fallbackUsed = false;
+
+    if (!agentToDial) {
+      const fallbackAgents = resolveLegacyFallbackAgents(routeConfig);
+      const availableFallbackAgents = fallbackAgents.filter((agentId) => isAgentAvailable(agentId));
+      agentToDial = availableFallbackAgents[0] || '';
+      fallbackUsed = Boolean(agentToDial);
+
+      console.log(
+        '[IVR queue fallback]',
+        JSON.stringify({
+          digit,
+          department: routeConfig.department,
+          fallbackAgents,
+          availableFallbackAgents,
+          selectedTarget: agentToDial || null,
+        })
+      );
+    }
 
     // ==========================
     // ❗ FALLBACK (NO AGENTS)
     // ==========================
     if (!agentToDial) {
-      if (!selectedTeam.length) {
-        twiml.say(sayOptions, prompts.departmentRetry);
-        twiml.redirect(buildIvrUrl('dept', currentLang));
-        return res.type('text/xml').send(twiml.toString());
-      }
-
       twiml.say(sayOptions, prompts.noAgents);
       return res.type('text/xml').send(twiml.toString());
     }
@@ -164,25 +255,23 @@ exports.handleIVR = async (req, res) => {
     // ==========================
     // 🔔 POPUP TO AGENTS
     // ==========================
-    availableAgents.forEach((agent) => {
-      const socketId = global.connectedUsers?.[agent];
-
-      if (socketId) {
-        global.io.to(socketId).emit('incomingCall', {
-          callSid: CallSid,
-          from: From,
-          to: To,
-          contact: contact
-            ? {
-                firstName: contact.firstName,
-                lastName: contact.lastName,
-                dba: contact.dba,
-                mid: contact.mid || ''
-              }
-            : null
-        });
-      }
+    emitIncomingCallPopup({
+      agentId: agentToDial,
+      CallSid,
+      From,
+      To,
+      contact,
     });
+
+    console.log(
+      '[IVR queue connect]',
+      JSON.stringify({
+        digit,
+        department: routeConfig.department,
+        selectedTarget: agentToDial,
+        fallbackUsed,
+      })
+    );
 
     twiml.say(sayOptions, prompts.connecting);
 

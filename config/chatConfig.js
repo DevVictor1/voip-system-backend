@@ -27,6 +27,24 @@ const TEAM_CHANNELS = [
   },
 ];
 
+const IVR_DEPARTMENT_ROUTES = {
+  '1': {
+    department: 'tech',
+    name: 'Tech Support',
+    fallbackAgents: ['agent_1', 'agent_2'],
+  },
+  '2': {
+    department: 'support',
+    name: 'Customer Support',
+    fallbackAgents: ['agent_3'],
+  },
+  '3': {
+    department: 'sales',
+    name: 'Sales',
+    fallbackAgents: ['agent_4', 'agent_5'],
+  },
+};
+
 const buildDmConversationId = (agentA, agentB) => {
   const participants = [agentA, agentB].filter(Boolean).sort();
   return `dm:${participants.join(':')}`;
@@ -39,6 +57,7 @@ const getAgentMeta = (agentId) => {
 module.exports = {
   INTERNAL_AGENTS,
   TEAM_CHANNELS,
+  IVR_DEPARTMENT_ROUTES,
   buildDmConversationId,
   getAgentMeta,
 };
