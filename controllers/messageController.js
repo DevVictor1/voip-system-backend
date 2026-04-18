@@ -3,7 +3,7 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const {
   INTERNAL_AGENTS,
-  TEAM_CHATS,
+  TEAM_CHANNELS,
   buildDmConversationId,
   getAgentMeta,
 } = require('../config/chatConfig');
@@ -21,7 +21,7 @@ const resolveRole = (role) => (role === 'admin' ? 'admin' : 'agent');
 const mapConfigTeamToTeamRecord = (team) => ({
   name: team.name,
   slug: team.id,
-  members: team.participants,
+  members: team.members,
   createdBy: DEFAULT_TEAM_CREATOR,
   isActive: true,
 });
@@ -33,23 +33,33 @@ const mapTeamRecordToRuntime = (team) => ({
 });
 
 const findConfigTeamById = (teamId) => {
-  return TEAM_CHATS.find((team) => team.id === teamId) || null;
+  return TEAM_CHANNELS.find((team) => team.id === teamId) || null;
 };
 
 const ensureDefaultTeams = async () => {
-  const existingCount = await Team.countDocuments({ isActive: true });
+  const configuredSlugs = TEAM_CHANNELS.map((team) => team.id);
 
-  if (existingCount === 0) {
-    await Promise.all(
-      TEAM_CHATS.map((team) =>
-        Team.findOneAndUpdate(
-          { slug: team.id },
-          { $setOnInsert: mapConfigTeamToTeamRecord(team) },
-          { upsert: true, new: true }
-        )
+  await Promise.all(
+    TEAM_CHANNELS.map((team) =>
+      Team.findOneAndUpdate(
+        { slug: team.id },
+        { $set: mapConfigTeamToTeamRecord(team) },
+        { upsert: true, new: true }
       )
-    );
-  }
+    )
+  );
+
+  // Retire old system-defined team channels that no longer exist in config.
+  await Team.updateMany(
+    {
+      createdBy: DEFAULT_TEAM_CREATOR,
+      slug: { $nin: configuredSlugs },
+      isActive: true,
+    },
+    {
+      $set: { isActive: false },
+    }
+  );
 
   return Team.find({ isActive: true }).sort({ name: 1 });
 };
@@ -120,7 +130,7 @@ const ensureTeamRecord = async ({ teamId, teamName, participants }) => {
 
   if (!team) {
     const configTeam = findConfigTeamById(resolvedTeamId);
-    const nextMembers = getSortedParticipants(participants || configTeam?.participants || []);
+    const nextMembers = getSortedParticipants(participants || configTeam?.members || []);
     const nextName = teamName || configTeam?.name || '';
 
     if (!nextName) {
@@ -196,6 +206,7 @@ const buildInternalConversationMap = async (userId, role) => {
     const conversationId = buildDmConversationId(userId, agentId);
     conversations.set(conversationId, {
       conversationType: 'internal_dm',
+      type: 'internal_dm',
       conversationId,
       participants: [userId, agentId].sort(),
       name: agent.name,
@@ -218,6 +229,8 @@ const buildInternalConversationMap = async (userId, role) => {
 
     conversations.set(teamConversation?.conversationId || team.id, {
       conversationType: 'team',
+      type: 'team',
+      id: teamConversation?.conversationId || team.id,
       conversationId: teamConversation?.conversationId || team.id,
       teamId: team.id,
       teamName: team.name,
@@ -384,7 +397,7 @@ const mapFallbackTeam = (team) => ({
 exports.getTeams = async (req, res) => {
   try {
     const teams = await ensureDefaultTeams();
-    return res.json(teams.length > 0 ? teams : TEAM_CHATS.map(mapFallbackTeam));
+    return res.json(teams.length > 0 ? teams : TEAM_CHANNELS.map(mapFallbackTeam));
   } catch (error) {
     console.error('❌ Teams fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch teams' });
@@ -472,6 +485,8 @@ exports.getConversations = async (req, res) => {
 
       conversations.set(conversationId, {
         conversationType: 'internal_dm',
+        type: 'internal_dm',
+        id: conversationId,
         conversationId,
         participants,
         name: conversation.title || otherAgent.name,
@@ -512,6 +527,8 @@ exports.getConversations = async (req, res) => {
 
           conversations.set(resolvedConversationId, {
             conversationType: 'internal_dm',
+            type: 'internal_dm',
+            id: resolvedConversationId,
             conversationId: resolvedConversationId,
             participants,
             name: conversationRecord?.title || otherAgent.name,
@@ -536,6 +553,8 @@ exports.getConversations = async (req, res) => {
 
           conversations.set(resolvedConversationId, {
             conversationType: 'team',
+            type: 'team',
+            id: resolvedConversationId,
             conversationId: resolvedConversationId,
             teamId: teamRecord?.slug || message.teamId || message.conversationId,
             teamName: teamRecord?.name || message.teamName || message.conversationId,

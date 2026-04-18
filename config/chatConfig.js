@@ -6,26 +6,21 @@ const INTERNAL_AGENTS = {
   agent_5: { name: 'Sales - Slot 2', role: 'Sales' },
 };
 
-const TEAM_CHATS = [
+const TEAM_CHANNELS = [
   {
     id: 'team_tech',
-    name: 'Tech Team',
-    participants: ['agent_1'],
+    name: 'Tech Support Team',
+    members: ['agent_1', 'agent_2'],
   },
   {
-    id: 'team_customer_service',
+    id: 'team_support',
     name: 'Customer Support Team',
-    participants: ['agent_3'],
+    members: ['agent_3'],
   },
   {
     id: 'team_sales',
     name: 'Sales Team',
-    participants: ['agent_4', 'agent_5'],
-  },
-  {
-    id: 'team_agents',
-    name: 'Agent Channel',
-    participants: ['agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5'],
+    members: ['agent_4', 'agent_5'],
   },
 ];
 
@@ -40,7 +35,7 @@ const getAgentMeta = (agentId) => {
 
 module.exports = {
   INTERNAL_AGENTS,
-  TEAM_CHATS,
+  TEAM_CHANNELS,
   buildDmConversationId,
   getAgentMeta,
 };
