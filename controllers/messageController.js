@@ -12,11 +12,8 @@ const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
 
 const normalizeUserId = (userId) => {
-  if (!userId || !INTERNAL_AGENTS[userId]) {
-    return 'agent_1';
-  }
-
-  return userId;
+  const normalized = String(userId || '').trim();
+  return INTERNAL_AGENTS[normalized] ? normalized : '';
 };
 
 const resolveRole = (role) => (role === 'admin' ? 'admin' : 'agent');
@@ -416,7 +413,15 @@ exports.startDirectConversation = async (req, res) => {
     const currentUserId = normalizeUserId(req.body?.currentUserId);
     const targetUserId = normalizeUserId(req.body?.targetUserId);
 
-    if (!currentUserId || !targetUserId || currentUserId === targetUserId) {
+    if (!currentUserId) {
+      return res.status(400).json({ error: 'Invalid currentUserId' });
+    }
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Invalid targetUserId' });
+    }
+
+    if (currentUserId === targetUserId) {
       return res.status(400).json({ error: 'Invalid participants' });
     }
 
@@ -442,6 +447,11 @@ exports.getConversations = async (req, res) => {
   try {
     const userId = normalizeUserId(req.query.userId);
     const role = resolveRole(req.query.role);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
     const conversations = await buildInternalConversationMap(userId, role);
     const dmRecords = await Conversation.find({
       type: 'internal_dm',
@@ -574,6 +584,10 @@ exports.getThread = async (req, res) => {
     const role = resolveRole(req.query.role);
     const { conversationId } = req.params;
 
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
     const seededMap = await buildInternalConversationMap(userId, role);
     const seeded = seededMap.get(conversationId);
     if (!seeded && !conversationId) {
@@ -658,6 +672,10 @@ exports.sendMessage = async (req, res) => {
 
     const userId = normalizeUserId(rawUserId);
     const trimmedBody = String(body || '').trim();
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
 
     if (!conversationId || !trimmedBody || !INTERNAL_TYPES.includes(conversationType)) {
       return res.status(400).json({ error: 'Missing fields' });
@@ -757,6 +775,10 @@ exports.markConversationRead = async (req, res) => {
   try {
     const { conversationId } = req.params;
     const userId = normalizeUserId(req.body?.userId || req.query.userId);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
 
     if (!conversationId) {
       return res.status(400).json({ error: 'Missing conversation id' });
