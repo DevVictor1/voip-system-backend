@@ -23,6 +23,13 @@ const signToken = (user) => {
 };
 
 const sanitizeUser = (user) => user.toSafeObject();
+const sanitizeTeammate = (user) => ({
+  id: user._id,
+  name: user.name,
+  role: user.role,
+  agentId: user.agentId,
+  isActive: user.isActive,
+});
 
 const isDuplicateKeyError = (error) => error?.code === 11000;
 
@@ -126,6 +133,26 @@ exports.me = async (req, res) => {
   return res.json({
     user: sanitizeUser(req.user),
   });
+};
+
+exports.listTeammates = async (req, res) => {
+  try {
+    const currentUserId = String(req.user?._id || '');
+    const teammates = await User.find({
+      isActive: true,
+      agentId: { $type: 'string', $ne: '' },
+      _id: { $ne: currentUserId },
+    })
+      .select('name role agentId isActive')
+      .sort({ name: 1 });
+
+    return res.json({
+      teammates: teammates.map(sanitizeTeammate),
+    });
+  } catch (error) {
+    console.error('Auth list teammates error:', error);
+    return res.status(500).json({ error: 'Failed to fetch teammates' });
+  }
 };
 
 exports.bootstrapUser = async (req, res) => {

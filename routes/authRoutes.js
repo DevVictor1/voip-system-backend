@@ -2,6 +2,7 @@ const express = require('express');
 const {
   login,
   me,
+  listTeammates,
   bootstrapUser,
   listUsers,
   createUser,
@@ -16,6 +17,7 @@ const router = express.Router();
 
 router.post('/login', login);
 router.get('/me', authenticate, me);
+router.get('/teammates', authenticate, listTeammates);
 router.post('/bootstrap', bootstrapUser);
 router.get('/users', authenticate, requireRole('admin'), listUsers);
 router.post('/users', authenticate, requireRole('admin'), createUser);
