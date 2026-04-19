@@ -1,7 +1,9 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Call = require('../models/Call');
 
 const DEFAULT_EXPIRES_IN = '7d';
+const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answer'];
 
 const getJwtSecret = () => {
   return process.env.JWT_SECRET || process.env.JWT_ACCESS_SECRET || '';
@@ -65,6 +67,39 @@ const findExistingAgentUser = (agentId, excludeUserId) => {
   }
 
   return User.findOne(query);
+};
+
+const dedupeAgentIds = (agentIds = []) => [...new Set(agentIds.filter(Boolean))];
+
+const resolveActiveCallCounts = async (agentIds = []) => {
+  const uniqueAgentIds = dedupeAgentIds(agentIds);
+
+  if (uniqueAgentIds.length === 0) {
+    return {};
+  }
+
+  const counts = await Call.aggregate([
+    {
+      $match: {
+        assignedAgentId: { $in: uniqueAgentIds },
+        status: { $nin: FINAL_CALL_STATUSES },
+      },
+    },
+    {
+      $group: {
+        _id: '$assignedAgentId',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  return counts.reduce((acc, item) => {
+    if (item?._id) {
+      acc[item._id] = item.count || 0;
+    }
+
+    return acc;
+  }, {});
 };
 
 const normalizeRole = (role) => {
@@ -244,6 +279,48 @@ exports.listTeammates = async (req, res) => {
   } catch (error) {
     console.error('Auth list teammates error:', error);
     return res.status(500).json({ error: 'Failed to fetch teammates' });
+  }
+};
+
+exports.listAgentStatus = async (_req, res) => {
+  try {
+    const users = await User.find({
+      agentId: { $type: 'string', $ne: '' },
+    })
+      .select('name role agentId department isActive status maxConcurrentCalls isAssignable')
+      .sort({ name: 1, createdAt: 1 });
+
+    const activeCallCounts = await resolveActiveCallCounts(
+      users.map((user) => user.agentId)
+    );
+
+    const agentStatus = users.map((user) => {
+      const agentId = user.agentId || '';
+      const connected = Boolean(global.connectedUsers?.[agentId]);
+      const voiceReady = Boolean(global.agentVoiceReady?.[agentId]);
+      const presenceStatus = global.agentStatus?.[agentId] || 'offline';
+
+      return {
+        id: String(user._id),
+        name: user.name,
+        role: user.role,
+        department: user.department,
+        agentId,
+        isActive: user.isActive !== false,
+        isAssignable: typeof user.isAssignable === 'boolean' ? user.isAssignable : true,
+        status: user.status || 'offline',
+        connected,
+        presenceStatus,
+        voiceReady,
+        activeCallCount: activeCallCounts[agentId] || 0,
+        maxConcurrentCalls: Number.isFinite(user.maxConcurrentCalls) ? user.maxConcurrentCalls : 1,
+      };
+    });
+
+    return res.json({ agentStatus });
+  } catch (error) {
+    console.error('Auth list agent status error:', error);
+    return res.status(500).json({ error: 'Failed to fetch agent status' });
   }
 };
 

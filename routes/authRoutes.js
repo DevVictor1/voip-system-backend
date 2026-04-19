@@ -3,6 +3,7 @@ const {
   login,
   me,
   listTeammates,
+  listAgentStatus,
   bootstrapUser,
   listUsers,
   createUser,
@@ -18,6 +19,7 @@ const router = express.Router();
 router.post('/login', login);
 router.get('/me', authenticate, me);
 router.get('/teammates', authenticate, listTeammates);
+router.get('/agent-status', authenticate, requireRole('admin'), listAgentStatus);
 router.post('/bootstrap', bootstrapUser);
 router.get('/users', authenticate, requireRole('admin'), listUsers);
 router.post('/users', authenticate, requireRole('admin'), createUser);
