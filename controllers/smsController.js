@@ -326,19 +326,25 @@ exports.getConversations = async (req, res) => {
       const phone = isOutgoing ? msg.to : msg.from;
       const key = normalize(msg.conversationId || phone);
 
-      if (!conversations[key]) {
-        const contact = await findContactByPhone(key);
+        if (!conversations[key]) {
+          const contact = await findContactByPhone(key);
 
-        conversations[key] = {
-          phone: key,
-          name: contact
-            ? `${contact.firstName} ${contact.lastName}`.trim()
-            : key,
-          lastMessage: msg.body,
-          updatedAt: msg.createdAt,
-          unread: 0,
-        };
-      }
+          conversations[key] = {
+            _id: contact?._id || null,
+            phone: key,
+            name: contact
+              ? `${contact.firstName} ${contact.lastName}`.trim()
+              : key,
+            lastMessage: msg.body,
+            updatedAt: msg.createdAt,
+            unread: 0,
+            assignedTo: contact?.assignedTo || null,
+            isUnassigned: typeof contact?.isUnassigned === 'boolean'
+              ? contact.isUnassigned
+              : !contact?.assignedTo,
+            assignmentStatus: contact?.assignmentStatus || 'open',
+          };
+        }
 
       if (!msg.read && msg.direction === 'inbound') {
         conversations[key].unread += 1;
