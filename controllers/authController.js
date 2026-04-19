@@ -106,6 +106,43 @@ const normalizeNonNegativeInteger = (value, fallback) => {
   return Math.max(0, Math.floor(parsed));
 };
 
+const normalizeAgentIdSegment = (value) => {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+};
+
+const buildAutoAgentIdBase = ({ name, role, department }) => {
+  const normalizedName = normalizeAgentIdSegment(name) || 'user';
+  const prefix = role === 'admin'
+    ? 'admin'
+    : (normalizeAgentIdSegment(department) || 'agent');
+
+  return `${prefix}_${normalizedName}`;
+};
+
+const resolveCreateAgentId = async ({ agentId, name, role, department }) => {
+  const explicitAgentId = agentId ? String(agentId).trim() : '';
+
+  if (explicitAgentId) {
+    return explicitAgentId;
+  }
+
+  const baseAgentId = buildAutoAgentIdBase({ name, role, department });
+  let candidate = baseAgentId;
+  let suffix = 2;
+
+  while (await findExistingAgentUser(candidate)) {
+    candidate = `${baseAgentId}_${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+};
+
 const hasInvalidDepartmentInput = (department) => {
   if (department === undefined || department === null) return false;
   return String(department).trim() !== '' && !normalizeDepartment(department);
@@ -228,7 +265,7 @@ exports.bootstrapUser = async (req, res) => {
     const password = String(req.body?.password || '');
     const name = String(req.body?.name || '').trim();
     const role = req.body?.role === 'admin' ? 'admin' : 'agent';
-    const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
+    const requestedAgentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
     const department = normalizeDepartment(req.body?.department);
 
     if (!name || !email || !password) {
@@ -244,10 +281,17 @@ exports.bootstrapUser = async (req, res) => {
       return res.status(409).json({ error: 'User already exists' });
     }
 
-    const existingAgentUser = await findExistingAgentUser(agentId);
+    const existingAgentUser = await findExistingAgentUser(requestedAgentId);
     if (existingAgentUser) {
       return res.status(409).json({ error: 'agentId is already in use' });
     }
+
+    const agentId = await resolveCreateAgentId({
+      agentId: requestedAgentId,
+      name,
+      role,
+      department,
+    });
 
     const user = await User.create({
       name,
@@ -303,10 +347,6 @@ exports.createUser = async (req, res) => {
       return res.status(400).json({ error: 'Invalid department' });
     }
 
-    if (payload.role === 'agent' && !payload.agentId) {
-      return res.status(400).json({ error: 'agentId is required for agent users' });
-    }
-
     const existingUser = await User.findOne({ email: payload.email });
     if (existingUser) {
       return res.status(409).json({ error: 'User already exists' });
@@ -317,8 +357,11 @@ exports.createUser = async (req, res) => {
       return res.status(409).json({ error: 'agentId is already in use' });
     }
 
+    const agentId = await resolveCreateAgentId(payload);
+
     const user = await User.create({
       ...payload,
+      agentId,
       password,
     });
 
@@ -372,7 +415,23 @@ exports.updateUser = async (req, res) => {
       return res.status(400).json({ error: 'Invalid department' });
     }
 
-    if (payload.role === 'agent' && !payload.agentId) {
+    const currentAgentId = user.agentId ? String(user.agentId).trim() : null;
+    const requestedAgentId = payload.agentId ? String(payload.agentId).trim() : null;
+    const isChangingExistingAgentId = Boolean(
+      currentAgentId
+      && requestedAgentId
+      && requestedAgentId !== currentAgentId
+    );
+
+    if (isChangingExistingAgentId) {
+      return res.status(400).json({
+        error: 'agentId is locked after creation because it is used for calls, messaging, and presence',
+      });
+    }
+
+    const finalAgentId = currentAgentId || requestedAgentId;
+
+    if (payload.role === 'agent' && !finalAgentId) {
       return res.status(400).json({ error: 'agentId is required for agent users' });
     }
 
@@ -385,7 +444,7 @@ exports.updateUser = async (req, res) => {
       return res.status(409).json({ error: 'User already exists' });
     }
 
-    const existingAgentUser = await findExistingAgentUser(payload.agentId, user._id);
+    const existingAgentUser = await findExistingAgentUser(finalAgentId, user._id);
     if (existingAgentUser) {
       return res.status(409).json({ error: 'agentId is already in use' });
     }
@@ -393,7 +452,7 @@ exports.updateUser = async (req, res) => {
     user.name = payload.name;
     user.email = payload.email;
     user.role = payload.role;
-    user.agentId = payload.agentId;
+    user.agentId = finalAgentId;
     user.department = payload.department;
     user.isActive = payload.isActive;
     user.status = payload.status;
