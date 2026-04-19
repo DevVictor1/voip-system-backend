@@ -6,6 +6,7 @@ const { parsePhoneNumberFromString } = require('libphonenumber-js');
 const {
   incrementAgentWorkload,
   normalizeAgentId,
+  syncLifecycleWorkload,
 } = require('../utils/agentWorkload');
 
 const client = twilio(
@@ -75,6 +76,9 @@ const AUTO_ASSIGNABLE_USER_QUERY = {
 };
 
 const hasAssignedAgent = (contact) => Boolean(normalizeAgentId(contact?.assignedTo));
+const isReopenableAssignmentStatus = (status) => ['resolved', 'closed'].includes(
+  String(status || '').trim().toLowerCase()
+);
 
 const findLeastLoadedAssignableAgent = async () => {
   return User.findOne(AUTO_ASSIGNABLE_USER_QUERY)
@@ -133,6 +137,49 @@ const tryAutoAssignContact = async (contact) => {
   return assignedContact;
 };
 
+const tryReopenContact = async (contact) => {
+  const previousStatus = String(contact?.assignmentStatus || 'open').trim().toLowerCase();
+
+  if (!contact?._id || !isReopenableAssignmentStatus(previousStatus)) {
+    return null;
+  }
+
+  const reopenedContact = await Contact.findOneAndUpdate(
+    {
+      _id: contact._id,
+      assignmentStatus: previousStatus,
+    },
+    {
+      $set: {
+        assignmentStatus: 'open',
+      },
+    },
+    {
+      returnDocument: 'after',
+    }
+  );
+
+  if (!reopenedContact) {
+    return null;
+  }
+
+  const workload = await syncLifecycleWorkload(
+    reopenedContact.assignedTo,
+    previousStatus,
+    'open'
+  );
+
+  console.log(
+    '[sms:auto-reopen] Reopened contact',
+    String(contact._id),
+    reopenedContact.assignedTo
+      ? `for ${reopenedContact.assignedTo}${workload.incremented ? ` (workload ${workload.incremented.currentActiveChats}/${workload.incremented.maxActiveChats})` : ' (workload unchanged)'}`
+      : 'without assigned agent'
+  );
+
+  return reopenedContact;
+};
+
 exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
@@ -147,7 +194,11 @@ exports.receiveSMS = async (req, res) => {
 
     console.log('Incoming SMS:', From, Body);
 
-    const contact = await findContactByPhone(From);
+    let contact = await findContactByPhone(From);
+
+    if (contact) {
+      contact = await tryReopenContact(contact) || contact;
+    }
 
     if (contact && !hasAssignedAgent(contact)) {
       await tryAutoAssignContact(contact);
