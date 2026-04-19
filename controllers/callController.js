@@ -86,6 +86,55 @@ const dedupeAgentIds = (agentIds = []) => {
   return [...new Set(agentIds.filter(Boolean))];
 };
 
+const getRoundRobinStore = () => {
+  if (!global.roundRobinIndex || typeof global.roundRobinIndex !== 'object') {
+    global.roundRobinIndex = {};
+  }
+
+  return global.roundRobinIndex;
+};
+
+const getRoundRobinPointer = (department, candidateCount) => {
+  if (!department || !candidateCount) {
+    return 0;
+  }
+
+  const store = getRoundRobinStore();
+  const rawPointer = Number(store[department] || 0);
+  if (!Number.isFinite(rawPointer) || rawPointer < 0) {
+    return 0;
+  }
+
+  return rawPointer % candidateCount;
+};
+
+const rotateCandidates = (users = [], pointer = 0) => {
+  if (!Array.isArray(users) || users.length <= 1) {
+    return Array.isArray(users) ? [...users] : [];
+  }
+
+  const normalizedPointer = pointer % users.length;
+  return [
+    ...users.slice(normalizedPointer),
+    ...users.slice(0, normalizedPointer),
+  ];
+};
+
+const updateRoundRobinPointer = (department, orderedCandidates = [], selectedAgentId) => {
+  if (!department || !selectedAgentId || !Array.isArray(orderedCandidates) || orderedCandidates.length === 0) {
+    return null;
+  }
+
+  const selectedIndex = orderedCandidates.findIndex((user) => user?.agentId === selectedAgentId);
+  if (selectedIndex < 0) {
+    return null;
+  }
+
+  const nextPointer = (selectedIndex + 1) % orderedCandidates.length;
+  getRoundRobinStore()[department] = nextPointer;
+  return nextPointer;
+};
+
 const resolveEligibleDepartmentUsers = async (department) => {
   if (!department) {
     return [];
@@ -142,7 +191,7 @@ const resolveActiveCallCounts = async (agentIds = []) => {
   }, {});
 };
 
-const selectQueueTarget = async (users = []) => {
+const selectQueueTarget = async (users = [], department = '') => {
   const availableUsers = users
     .filter((user) => isAgentAvailable(user?.agentId))
     .filter((user) => {
@@ -164,6 +213,21 @@ const selectQueueTarget = async (users = []) => {
     availableUsers.map((user) => user.agentId)
   );
 
+  const stableUsers = [...availableUsers].sort((left, right) => {
+    const leftName = String(left.name || '');
+    const rightName = String(right.name || '');
+    return leftName.localeCompare(rightName);
+  });
+  const roundRobinPointer = getRoundRobinPointer(department, stableUsers.length);
+  const rotatedUsers = rotateCandidates(stableUsers, roundRobinPointer);
+  const roundRobinOrder = rotatedUsers.reduce((acc, user, index) => {
+    if (user?.agentId) {
+      acc[user.agentId] = index;
+    }
+
+    return acc;
+  }, {});
+
   const rankedUsers = availableUsers
     .map((user) => {
       const activeCallCount = activeCallCounts[user.agentId] || 0;
@@ -183,6 +247,17 @@ const selectQueueTarget = async (users = []) => {
         return left.activeCallCount - right.activeCallCount;
       }
 
+      const leftRoundRobinIndex = Number.isFinite(roundRobinOrder[left.agentId])
+        ? roundRobinOrder[left.agentId]
+        : Number.MAX_SAFE_INTEGER;
+      const rightRoundRobinIndex = Number.isFinite(roundRobinOrder[right.agentId])
+        ? roundRobinOrder[right.agentId]
+        : Number.MAX_SAFE_INTEGER;
+
+      if (leftRoundRobinIndex !== rightRoundRobinIndex) {
+        return leftRoundRobinIndex - rightRoundRobinIndex;
+      }
+
       const leftName = String(left.name || '');
       const rightName = String(right.name || '');
       return leftName.localeCompare(rightName);
@@ -192,6 +267,8 @@ const selectQueueTarget = async (users = []) => {
     target: rankedUsers[0] || null,
     availableUsers: rankedUsers,
     activeCallCounts,
+    roundRobinPointer,
+    rotatedUsers,
   };
 };
 
@@ -214,7 +291,9 @@ const buildCandidatePlan = async (routeConfig) => {
     target: queueTarget,
     availableUsers: availableDepartmentUsers,
     activeCallCounts,
-  } = await selectQueueTarget(eligibleDepartmentUsers);
+    roundRobinPointer,
+    rotatedUsers,
+  } = await selectQueueTarget(eligibleDepartmentUsers, routeConfig?.department);
   const queueCandidates = dedupeAgentIds(
     availableDepartmentUsers.map((user) => user.agentId)
   );
@@ -227,6 +306,8 @@ const buildCandidatePlan = async (routeConfig) => {
     activeCallCounts,
     queueCandidates,
     fallbackCandidates,
+    roundRobinPointer,
+    rotatedUsers,
   };
 };
 
@@ -406,20 +487,24 @@ exports.handleIVR = async (req, res) => {
       return res.type('text/xml').send(twiml.toString());
     }
 
-    const {
-      eligibleDepartmentUsers,
-      queueTarget,
-      availableDepartmentUsers,
-      activeCallCounts,
-      queueCandidates,
-      fallbackCandidates,
-    } = await buildCandidatePlan(routeConfig);
+  const {
+    eligibleDepartmentUsers,
+    queueTarget,
+    availableDepartmentUsers,
+    activeCallCounts,
+    queueCandidates,
+    fallbackCandidates,
+    roundRobinPointer,
+    rotatedUsers,
+  } = await buildCandidatePlan(routeConfig);
 
     console.log(
       '[IVR queue]',
       JSON.stringify({
         digit,
         department: routeConfig.department,
+        roundRobinPointer,
+        rotatedCandidates: rotatedUsers.map((user) => user.agentId),
         eligibleUsers: eligibleDepartmentUsers.map((user) => ({
           id: String(user._id),
           name: user.name,
@@ -509,6 +594,7 @@ exports.handleIVR = async (req, res) => {
       JSON.stringify({
         digit,
         department: routeConfig.department,
+        roundRobinPointerBefore: roundRobinPointer,
         attemptNumber: 1,
         selectedTarget: agentToDial,
         fallbackUsed,
@@ -525,6 +611,25 @@ exports.handleIVR = async (req, res) => {
       digit,
       callSid: CallSid,
     });
+
+    if (!fallbackUsed) {
+      const nextPointer = updateRoundRobinPointer(
+        routeConfig.department,
+        availableDepartmentUsers,
+        agentToDial
+      );
+
+      console.log(
+        '[RR]',
+        JSON.stringify({
+          department: routeConfig.department,
+          pointerBefore: roundRobinPointer,
+          candidatesAfterRotation: rotatedUsers.map((user) => user.agentId),
+          selected: agentToDial,
+          pointerAfter: nextPointer,
+        })
+      );
+    }
 
     return res.type('text/xml').send(twiml.toString());
   }
