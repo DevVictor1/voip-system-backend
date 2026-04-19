@@ -3,7 +3,6 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
 const {
-  INTERNAL_AGENTS,
   TEAM_CHANNELS,
   buildDmConversationId,
   getAgentMeta,
@@ -12,9 +11,24 @@ const {
 const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
 
-const normalizeUserId = (userId) => {
+const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
-  return INTERNAL_AGENTS[normalized] ? normalized : '';
+  return normalized || '';
+};
+
+const normalizeUserId = async (userId) => {
+  const normalized = normalizeUserIdValue(userId);
+
+  if (!normalized) {
+    return '';
+  }
+
+  const existingUser = await User.findOne({
+    agentId: normalized,
+    isActive: true,
+  }).select('agentId');
+
+  return existingUser?.agentId || '';
 };
 
 const resolveRole = (role) => (role === 'admin' ? 'admin' : 'agent');
@@ -38,6 +52,15 @@ const mapTeamRecordToRuntime = (team) => ({
   participants: team.members || [],
   department: normalizeDepartment(team.department),
 });
+
+const getActiveInternalUsers = async () => {
+  return User.find({
+    isActive: true,
+    agentId: { $type: 'string', $ne: '' },
+  })
+    .select('name role agentId department isActive')
+    .sort({ name: 1, createdAt: 1 });
+};
 
 const findConfigTeamById = (teamId) => {
   return TEAM_CHANNELS.find((team) => team.id === teamId) || null;
@@ -247,25 +270,33 @@ const syncConversationSummary = async (conversationId, type, conversationRecord 
 
 const buildInternalConversationMap = async (userId, role) => {
   const conversations = new Map();
+  const activeUsers = await getActiveInternalUsers();
 
-  Object.entries(INTERNAL_AGENTS).forEach(([agentId, agent]) => {
-    if (agentId === userId) return;
+  activeUsers.forEach((user) => {
+    const agentId = user?.agentId;
+    if (!agentId || agentId === userId) return;
 
+    const fallbackMeta = getAgentMeta(agentId);
+    const displayName = user.name || fallbackMeta.name || agentId;
+    const roleLabel = normalizeDepartment(user.department)
+      ? teamDepartmentLabel(user.department)
+      : (user.role === 'admin' ? 'Admin' : user.role || fallbackMeta.role || 'Agent');
     const conversationId = buildDmConversationId(userId, agentId);
+
     conversations.set(conversationId, {
       conversationType: 'internal_dm',
       type: 'internal_dm',
       conversationId,
       participants: [userId, agentId].sort(),
-      name: agent.name,
-      role: agent.role,
+      name: displayName,
+      role: roleLabel,
       agentId,
       lastMessage: '',
       updatedAt: null,
       unread: 0,
       isInternal: true,
       isTeam: false,
-      previewFallback: `Message ${agent.name}`,
+      previewFallback: `Message ${displayName}`,
     });
   });
 
@@ -295,6 +326,15 @@ const buildInternalConversationMap = async (userId, role) => {
   }
 
   return conversations;
+};
+
+const teamDepartmentLabel = (department) => {
+  const normalized = normalizeDepartment(department);
+
+  if (normalized === 'tech') return 'Tech Support';
+  if (normalized === 'support') return 'Customer Support';
+  if (normalized === 'sales') return 'Sales';
+  return '';
 };
 
 const isConversationVisible = (conversation, userId, role) => {
@@ -471,8 +511,8 @@ exports.getConversationRecord = async (req, res) => {
 
 exports.startDirectConversation = async (req, res) => {
   try {
-    const currentUserId = normalizeUserId(req.body?.currentUserId);
-    const targetUserId = normalizeUserId(req.body?.targetUserId);
+    const currentUserId = await normalizeUserId(req.body?.currentUserId);
+    const targetUserId = await normalizeUserId(req.body?.targetUserId);
 
     if (!currentUserId) {
       return res.status(400).json({ error: 'Invalid currentUserId' });
@@ -506,7 +546,7 @@ exports.startDirectConversation = async (req, res) => {
 
 exports.getConversations = async (req, res) => {
   try {
-    const userId = normalizeUserId(req.query.userId);
+    const userId = await normalizeUserId(req.query.userId);
     const role = resolveRole(req.query.role);
 
     if (!userId) {
@@ -647,7 +687,7 @@ exports.getConversations = async (req, res) => {
 
 exports.getThread = async (req, res) => {
   try {
-    const userId = normalizeUserId(req.query.userId);
+    const userId = await normalizeUserId(req.query.userId);
     const role = resolveRole(req.query.role);
     const { conversationId } = req.params;
 
@@ -737,7 +777,7 @@ exports.sendMessage = async (req, res) => {
       body,
     } = req.body || {};
 
-    const userId = normalizeUserId(rawUserId);
+    const userId = await normalizeUserId(rawUserId);
     const trimmedBody = String(body || '').trim();
 
     if (!userId) {
@@ -841,7 +881,7 @@ exports.sendMessage = async (req, res) => {
 exports.markConversationRead = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = normalizeUserId(req.body?.userId || req.query.userId);
+    const userId = await normalizeUserId(req.body?.userId || req.query.userId);
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });

@@ -3,7 +3,6 @@ const Contact = require('../models/Contact');
 const User = require('../models/User');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
 const {
-  INTERNAL_AGENTS,
   IVR_DEPARTMENT_ROUTES,
 } = require('../config/chatConfig');
 
@@ -104,8 +103,7 @@ const selectQueueTarget = (users = []) => {
 };
 
 const resolveLegacyFallbackAgents = (routeConfig) => {
-  const fallbackAgents = dedupeAgentIds(routeConfig?.fallbackAgents || []);
-  return fallbackAgents.filter((agentId) => INTERNAL_AGENTS[agentId]);
+  return dedupeAgentIds(routeConfig?.fallbackAgents || []);
 };
 
 const emitIncomingCallPopup = ({ agentId, CallSid, From, To, contact }) => {
