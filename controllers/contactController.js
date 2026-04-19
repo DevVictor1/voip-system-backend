@@ -5,7 +5,14 @@ const Contact = require('../models/Contact');
 const {
   normalizeAgentId,
   syncAssignmentWorkload,
+  syncLifecycleWorkload,
 } = require('../utils/agentWorkload');
+
+const CONTACT_ASSIGNMENT_STATUSES = ['open', 'resolved', 'closed'];
+const normalizeAssignmentStatus = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return CONTACT_ASSIGNMENT_STATUSES.includes(normalized) ? normalized : '';
+};
 
 // ðŸ”¥ NORMALIZE PHONE
 const normalizePhone = (phone) => {
@@ -214,6 +221,56 @@ exports.assignContact = async (req, res) => {
   } catch (err) {
     console.error('âŒ Assign error:', err);
     res.status(500).json({ error: 'Failed to assign contact' });
+  }
+};
+
+exports.updateAssignmentStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const nextStatus = normalizeAssignmentStatus(req.body?.assignmentStatus);
+
+    if (!nextStatus) {
+      return res.status(400).json({ error: 'Invalid assignmentStatus' });
+    }
+
+    const existingContact = await Contact.findById(id);
+
+    if (!existingContact) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+
+    const previousStatus = normalizeAssignmentStatus(existingContact.assignmentStatus) || 'open';
+
+    if (previousStatus === nextStatus) {
+      return res.json(existingContact);
+    }
+
+    const updated = await Contact.findByIdAndUpdate(
+      id,
+      {
+        assignmentStatus: nextStatus,
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+
+    const workload = await syncLifecycleWorkload(existingContact.assignedTo, previousStatus, nextStatus);
+
+    if (workload.changed) {
+      console.log(
+        '[contact:lifecycle] Updated workload for contact',
+        id,
+        `(${previousStatus} -> ${nextStatus})`
+      );
+    }
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Assignment status error:', error);
+    res.status(500).json({ error: 'Failed to update assignment status' });
   }
 };
 

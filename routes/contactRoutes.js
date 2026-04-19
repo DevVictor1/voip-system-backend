@@ -7,7 +7,8 @@ const {
   getContacts,
   deleteContact,
   clearContacts,
-  assignContact
+  assignContact,
+  updateAssignmentStatus,
 } = require('../controllers/contactController');
 
 // 📁 FILE UPLOAD CONFIG
@@ -21,6 +22,9 @@ router.get('/', getContacts);
 
 // 👤 ASSIGN
 router.put('/:id/assign', assignContact);
+
+// 🔄 LIFECYCLE
+router.put('/:id/assignment-status', updateAssignmentStatus);
 
 // 🧹 CLEAR
 router.delete('/clear', clearContacts);

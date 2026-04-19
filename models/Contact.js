@@ -1,11 +1,13 @@
-﻿const mongoose = require('mongoose');
+const mongoose = require('mongoose');
+
+const CONTACT_ASSIGNMENT_STATUSES = ['open', 'resolved', 'closed'];
 
 const contactSchema = new mongoose.Schema(
 {
   firstName: String,
   lastName: String,
 
-  // ðŸ”¥ MULTIPLE NUMBERS
+  // Multiple numbers
   phones: [
     {
       label: String,
@@ -16,19 +18,32 @@ const contactSchema = new mongoose.Schema(
   dba: String,
   mid: String,
 
-  // ðŸ”¥ NEW (SAFE ADD)
+  // Shared inbox assignment identity
   assignedTo: {
-    type: String, // later will be userId
+    type: String,
     default: null,
   },
 
-  // ðŸ”¥ NEW (FOR SHARED INBOX)
+  // Shared inbox availability flag
   isUnassigned: {
     type: Boolean,
     default: true,
+  },
+  assignmentStatus: {
+    type: String,
+    enum: CONTACT_ASSIGNMENT_STATUSES,
+    default: 'open',
+    trim: true,
   }
 },
 { timestamps: true }
 );
+
+contactSchema.set('toJSON', {
+  transform: (_doc, ret) => {
+    ret.assignmentStatus = ret.assignmentStatus || 'open';
+    return ret;
+  },
+});
 
 module.exports = mongoose.model('Contact', contactSchema);

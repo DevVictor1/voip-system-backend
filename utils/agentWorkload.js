@@ -1,6 +1,7 @@
 const User = require('../models/User');
 
 const normalizeAgentId = (value) => String(value || '').trim();
+const isActiveAssignmentStatus = (status) => normalizeAgentId(status).toLowerCase() === 'open';
 
 const buildCapacityFilter = (respectCapacity) => (
   respectCapacity
@@ -92,9 +93,41 @@ const syncAssignmentWorkload = async (previousAgentId, nextAgentId, options = {}
   };
 };
 
+const syncLifecycleWorkload = async (agentId, previousStatus, nextStatus) => {
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const wasActive = isActiveAssignmentStatus(previousStatus || 'open');
+  const isActive = isActiveAssignmentStatus(nextStatus || 'open');
+
+  if (!normalizedAgentId || wasActive === isActive) {
+    return {
+      agentId: normalizedAgentId,
+      decremented: null,
+      incremented: null,
+      changed: false,
+    };
+  }
+
+  if (wasActive && !isActive) {
+    return {
+      agentId: normalizedAgentId,
+      decremented: await decrementAgentWorkload(normalizedAgentId),
+      incremented: null,
+      changed: true,
+    };
+  }
+
+  return {
+    agentId: normalizedAgentId,
+    decremented: null,
+    incremented: await incrementAgentWorkload(normalizedAgentId),
+    changed: true,
+  };
+};
+
 module.exports = {
   normalizeAgentId,
   incrementAgentWorkload,
   decrementAgentWorkload,
   syncAssignmentWorkload,
+  syncLifecycleWorkload,
 };
