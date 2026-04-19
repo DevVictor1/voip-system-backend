@@ -62,6 +62,36 @@ const findContactByPhone = async (phone) => {
   });
 };
 
+const findOrCreateContactByPhone = async (phone) => {
+  const normalized = normalize(phone);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const existingContact = await findContactByPhone(normalized);
+  if (existingContact) {
+    return existingContact;
+  }
+
+  const createdContact = await Contact.create({
+    firstName: '',
+    lastName: '',
+    phones: [
+      {
+        label: 'mobile',
+        number: normalized,
+      },
+    ],
+    assignedTo: null,
+    isUnassigned: true,
+    assignmentStatus: 'open',
+  });
+
+  console.log('[sms:contact] Created new contact for inbound number', normalized);
+  return createdContact;
+};
+
 const AUTO_ASSIGNABLE_USER_QUERY = {
   agentId: { $type: 'string', $ne: '' },
   isActive: true,
@@ -194,7 +224,7 @@ exports.receiveSMS = async (req, res) => {
 
     console.log('Incoming SMS:', From, Body);
 
-    let contact = await findContactByPhone(From);
+    let contact = await findOrCreateContactByPhone(From);
 
     if (contact) {
       contact = await tryReopenContact(contact) || contact;
