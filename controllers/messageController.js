@@ -51,7 +51,7 @@ const ensureDefaultTeams = async () => {
       Team.findOneAndUpdate(
         { slug: team.id },
         { $set: mapConfigTeamToTeamRecord(team) },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       )
     )
   );

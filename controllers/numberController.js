@@ -82,7 +82,7 @@ exports.updateNumber = async (req, res) => {
     const updated = await PortingNumber.findByIdAndUpdate(
       req.params.id,
       payload,
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
 
     if (!updated) {

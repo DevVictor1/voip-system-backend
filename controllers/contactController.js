@@ -171,7 +171,7 @@ exports.assignContact = async (req, res) => {
         assignedTo: userId,
         isUnassigned: false,
       },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     res.json(updated);
