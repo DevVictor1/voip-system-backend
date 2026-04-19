@@ -2,6 +2,10 @@
 const csv = require('csv-parser');
 const xlsx = require('xlsx');
 const Contact = require('../models/Contact');
+const {
+  normalizeAgentId,
+  syncAssignmentWorkload,
+} = require('../utils/agentWorkload');
 
 // ðŸ”¥ NORMALIZE PHONE
 const normalizePhone = (phone) => {
@@ -164,15 +168,46 @@ exports.assignContact = async (req, res) => {
   try {
     const { id } = req.params;
     const { userId } = req.body;
+    const nextAssignedTo = normalizeAgentId(userId);
+
+    const existingContact = await Contact.findById(id);
+
+    if (!existingContact) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+
+    const previousAssignedTo = normalizeAgentId(existingContact.assignedTo);
+    const nextIsUnassigned = !nextAssignedTo;
+
+    if (
+      previousAssignedTo === nextAssignedTo &&
+      existingContact.isUnassigned === nextIsUnassigned
+    ) {
+      return res.json(existingContact);
+    }
 
     const updated = await Contact.findByIdAndUpdate(
       id,
       {
-        assignedTo: userId,
-        isUnassigned: false,
+        assignedTo: nextAssignedTo || null,
+        isUnassigned: nextIsUnassigned,
       },
       { returnDocument: 'after' }
     );
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+
+    const workload = await syncAssignmentWorkload(previousAssignedTo, nextAssignedTo);
+
+    if (workload.changed) {
+      console.log(
+        '[contact:assignment] Updated workload for contact',
+        id,
+        `(${previousAssignedTo || 'unassigned'} -> ${nextAssignedTo || 'unassigned'})`
+      );
+    }
 
     res.json(updated);
 

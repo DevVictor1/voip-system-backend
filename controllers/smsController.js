@@ -3,6 +3,10 @@ const Contact = require('../models/Contact');
 const User = require('../models/User');
 const twilio = require('twilio');
 const { parsePhoneNumberFromString } = require('libphonenumber-js');
+const {
+  incrementAgentWorkload,
+  normalizeAgentId,
+} = require('../utils/agentWorkload');
 
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -70,31 +74,12 @@ const AUTO_ASSIGNABLE_USER_QUERY = {
   },
 };
 
-const hasAssignedAgent = (contact) => Boolean(String(contact?.assignedTo || '').trim());
+const hasAssignedAgent = (contact) => Boolean(normalizeAgentId(contact?.assignedTo));
 
 const findLeastLoadedAssignableAgent = async () => {
   return User.findOne(AUTO_ASSIGNABLE_USER_QUERY)
     .select('agentId name currentActiveChats maxActiveChats')
     .sort({ currentActiveChats: 1, createdAt: 1, name: 1 });
-};
-
-const incrementAssignedAgentWorkload = async (agent) => {
-  if (!agent?._id) {
-    return null;
-  }
-
-  return User.findOneAndUpdate(
-    {
-      _id: agent._id,
-      ...AUTO_ASSIGNABLE_USER_QUERY,
-    },
-    {
-      $inc: { currentActiveChats: 1 },
-    },
-    {
-      returnDocument: 'after',
-    }
-  ).select('agentId currentActiveChats maxActiveChats');
 };
 
 const tryAutoAssignContact = async (contact) => {
@@ -133,7 +118,7 @@ const tryAutoAssignContact = async (contact) => {
     return null;
   }
 
-  const updatedAgent = await incrementAssignedAgentWorkload(selectedAgent);
+  const updatedAgent = await incrementAgentWorkload(selectedAgent.agentId, { respectCapacity: true });
 
   console.log(
     '[sms:auto-assign] Assigned contact',
