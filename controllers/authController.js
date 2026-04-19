@@ -30,6 +30,11 @@ const sanitizeTeammate = (user) => ({
   agentId: user.agentId,
   department: user.department,
   isActive: user.isActive,
+  status: user.status || 'offline',
+  maxActiveChats: Number.isFinite(user.maxActiveChats) ? user.maxActiveChats : 5,
+  currentActiveChats: Number.isFinite(user.currentActiveChats) ? user.currentActiveChats : 0,
+  maxConcurrentCalls: Number.isFinite(user.maxConcurrentCalls) ? user.maxConcurrentCalls : 1,
+  isAssignable: typeof user.isAssignable === 'boolean' ? user.isAssignable : true,
 });
 
 const isDuplicateKeyError = (error) => error?.code === 11000;
@@ -79,6 +84,28 @@ const normalizeDepartment = (department) => {
   return null;
 };
 
+const normalizeStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (['available', 'busy', 'offline'].includes(normalized)) {
+    return normalized;
+  }
+
+  return 'offline';
+};
+
+const normalizeNonNegativeInteger = (value, fallback) => {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.floor(parsed));
+};
+
 const hasInvalidDepartmentInput = (department) => {
   if (department === undefined || department === null) return false;
   return String(department).trim() !== '' && !normalizeDepartment(department);
@@ -91,6 +118,11 @@ const buildUserPayload = ({
   agentId,
   department,
   isActive,
+  status,
+  maxActiveChats,
+  currentActiveChats,
+  maxConcurrentCalls,
+  isAssignable,
 }) => {
   const normalizedRole = normalizeRole(role);
   const normalizedAgentId = agentId ? String(agentId).trim() : null;
@@ -103,6 +135,11 @@ const buildUserPayload = ({
     agentId: normalizedRole === 'agent' ? normalizedAgentId : normalizedAgentId,
     department: normalizedDepartment,
     isActive: isActive === false ? false : true,
+    status: normalizeStatus(status),
+    maxActiveChats: normalizeNonNegativeInteger(maxActiveChats, 5),
+    currentActiveChats: normalizeNonNegativeInteger(currentActiveChats, 0),
+    maxConcurrentCalls: normalizeNonNegativeInteger(maxConcurrentCalls, 1),
+    isAssignable: isAssignable === false ? false : true,
   };
 };
 
@@ -161,7 +198,7 @@ exports.listTeammates = async (req, res) => {
       agentId: { $type: 'string', $ne: '' },
       _id: { $ne: currentUserId },
     })
-      .select('name role agentId department isActive')
+      .select('name role agentId department isActive status maxActiveChats currentActiveChats maxConcurrentCalls isAssignable')
       .sort({ name: 1 });
 
     return res.json({
@@ -220,6 +257,11 @@ exports.bootstrapUser = async (req, res) => {
       agentId,
       department,
       isActive: true,
+      status: normalizeStatus(req.body?.status),
+      maxActiveChats: normalizeNonNegativeInteger(req.body?.maxActiveChats, 5),
+      currentActiveChats: normalizeNonNegativeInteger(req.body?.currentActiveChats, 0),
+      maxConcurrentCalls: normalizeNonNegativeInteger(req.body?.maxConcurrentCalls, 1),
+      isAssignable: req.body?.isAssignable === false ? false : true,
     });
 
     return res.status(201).json({
@@ -354,6 +396,11 @@ exports.updateUser = async (req, res) => {
     user.agentId = payload.agentId;
     user.department = payload.department;
     user.isActive = payload.isActive;
+    user.status = payload.status;
+    user.maxActiveChats = payload.maxActiveChats;
+    user.currentActiveChats = payload.currentActiveChats;
+    user.maxConcurrentCalls = payload.maxConcurrentCalls;
+    user.isAssignable = payload.isAssignable;
 
     await user.save();
 
