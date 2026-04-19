@@ -1,5 +1,6 @@
 const Message = require('../models/Message');
 const Contact = require('../models/Contact');
+const User = require('../models/User');
 const twilio = require('twilio');
 const { parsePhoneNumberFromString } = require('libphonenumber-js');
 
@@ -56,6 +57,97 @@ const findContactByPhone = async (phone) => {
   });
 };
 
+const AUTO_ASSIGNABLE_USER_QUERY = {
+  agentId: { $type: 'string', $ne: '' },
+  isActive: true,
+  isAssignable: true,
+  status: 'available',
+  $expr: {
+    $lt: [
+      { $ifNull: ['$currentActiveChats', 0] },
+      { $ifNull: ['$maxActiveChats', 5] },
+    ],
+  },
+};
+
+const hasAssignedAgent = (contact) => Boolean(String(contact?.assignedTo || '').trim());
+
+const findLeastLoadedAssignableAgent = async () => {
+  return User.findOne(AUTO_ASSIGNABLE_USER_QUERY)
+    .select('agentId name currentActiveChats maxActiveChats')
+    .sort({ currentActiveChats: 1, createdAt: 1, name: 1 });
+};
+
+const incrementAssignedAgentWorkload = async (agent) => {
+  if (!agent?._id) {
+    return null;
+  }
+
+  return User.findOneAndUpdate(
+    {
+      _id: agent._id,
+      ...AUTO_ASSIGNABLE_USER_QUERY,
+    },
+    {
+      $inc: { currentActiveChats: 1 },
+    },
+    {
+      returnDocument: 'after',
+    }
+  ).select('agentId currentActiveChats maxActiveChats');
+};
+
+const tryAutoAssignContact = async (contact) => {
+  if (!contact?._id || hasAssignedAgent(contact)) {
+    return null;
+  }
+
+  const selectedAgent = await findLeastLoadedAssignableAgent();
+
+  if (!selectedAgent?.agentId) {
+    console.log('[sms:auto-assign] No eligible agent available for contact', String(contact._id));
+    return null;
+  }
+
+  const assignedContact = await Contact.findOneAndUpdate(
+    {
+      _id: contact._id,
+      $or: [
+        { assignedTo: null },
+        { assignedTo: '' },
+        { assignedTo: { $exists: false } },
+      ],
+    },
+    {
+      $set: {
+        assignedTo: selectedAgent.agentId,
+        isUnassigned: false,
+      },
+    },
+    {
+      returnDocument: 'after',
+    }
+  );
+
+  if (!assignedContact) {
+    return null;
+  }
+
+  const updatedAgent = await incrementAssignedAgentWorkload(selectedAgent);
+
+  console.log(
+    '[sms:auto-assign] Assigned contact',
+    String(contact._id),
+    'to',
+    selectedAgent.agentId,
+    updatedAgent
+      ? `(workload ${updatedAgent.currentActiveChats}/${updatedAgent.maxActiveChats})`
+      : '(workload increment skipped)'
+  );
+
+  return assignedContact;
+};
+
 exports.receiveSMS = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
@@ -69,6 +161,12 @@ exports.receiveSMS = async (req, res) => {
     }
 
     console.log('Incoming SMS:', From, Body);
+
+    const contact = await findContactByPhone(From);
+
+    if (contact && !hasAssignedAgent(contact)) {
+      await tryAutoAssignContact(contact);
+    }
 
     const message = await Message.create({
       from: normalize(From),
