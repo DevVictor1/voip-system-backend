@@ -102,23 +102,50 @@ const users = {};
 global.connectedUsers = users;
 const agentStatus = {};
 global.agentStatus = agentStatus;
+const agentVoiceReady = {};
+global.agentVoiceReady = agentVoiceReady;
 
 io.on('connection', (socket) => {
   console.log('⚡ Connected:', socket.id);
 
   // ✅ REGISTER USER
-  socket.on('registerUser', (userId) => {
+  socket.on('registerUser', (payload) => {
+    const userId = typeof payload === 'string' ? payload : payload?.userId;
+    const status = payload?.status;
+    const voiceReady = payload?.voiceReady;
+
+    if (!userId) {
+      console.log('⚠️ registerUser skipped: missing userId');
+      return;
+    }
+
     users[userId] = socket.id;
-    agentStatus[userId] = 'online';
-    console.log(`✅ Registered ${userId} → ${socket.id}`);
+    agentStatus[userId] = status || agentStatus[userId] || 'online';
+    agentVoiceReady[userId] = typeof voiceReady === 'boolean'
+      ? voiceReady
+      : Boolean(agentVoiceReady[userId]);
+    socket.data.userId = userId;
+    console.log(
+      `✅ Registered ${userId} → ${socket.id} | status=${agentStatus[userId]} | voiceReady=${agentVoiceReady[userId]}`
+    );
   });
 
   socket.on('agentStatus', (data) => {
     const { userId, status } = data || {};
     if (!userId || !status) return;
     agentStatus[userId] = status;
-    console.log(`📶 Status ${userId} → ${status}`);
+    console.log(`📶 Agent marked ${status}: ${userId}`);
     io.emit('agentStatus', { userId, status });
+  });
+
+  socket.on('voiceReady', (data) => {
+    const { userId, voiceReady, deviceStatus } = data || {};
+    if (!userId) return;
+
+    agentVoiceReady[userId] = Boolean(voiceReady);
+    console.log(
+      `🎙️ Voice presence ${userId} → ready=${agentVoiceReady[userId]} | deviceStatus=${deviceStatus || 'unknown'}`
+    );
   });
 
   socket.on('getAgentsStatus', () => {
@@ -132,12 +159,20 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('❌ Disconnected:', socket.id);
 
+    const disconnectedUserId = socket.data?.userId;
+
     for (const userId in users) {
       if (users[userId] === socket.id) {
         delete users[userId];
         agentStatus[userId] = 'offline';
+        agentVoiceReady[userId] = false;
         io.emit('agentStatus', { userId, status: 'offline' });
+        console.log(`📴 Agent disconnected ${userId} | voiceReady=false`);
       }
+    }
+
+    if (disconnectedUserId && !users[disconnectedUserId]) {
+      agentVoiceReady[disconnectedUserId] = false;
     }
   });
 });

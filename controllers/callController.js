@@ -38,11 +38,35 @@ const PROMPTS = {
 const buildIvrUrl = (step, lang) => `/api/calls/ivr?step=${step}&lang=${normalizeLang(lang)}`;
 
 const isAgentAvailable = (agentId) => {
-  return Boolean(
-    agentId
-    && global.connectedUsers?.[agentId]
-    && global.agentStatus?.[agentId] === 'online'
-  );
+  if (!agentId) {
+    return false;
+  }
+
+  const socketId = global.connectedUsers?.[agentId] || '';
+  const status = global.agentStatus?.[agentId] || 'offline';
+  const voiceReady = Boolean(global.agentVoiceReady?.[agentId]);
+
+  return Boolean(socketId && status === 'online' && voiceReady);
+};
+
+const getAgentAvailabilityReason = (agentId) => {
+  if (!agentId) {
+    return 'missing-agent-id';
+  }
+
+  if (!global.connectedUsers?.[agentId]) {
+    return 'no-socket-registration';
+  }
+
+  if (global.agentStatus?.[agentId] !== 'online') {
+    return `status-${global.agentStatus?.[agentId] || 'offline'}`;
+  }
+
+  if (!global.agentVoiceReady?.[agentId]) {
+    return 'voice-not-ready';
+  }
+
+  return 'available';
 };
 
 const dedupeAgentIds = (agentIds = []) => {
@@ -217,6 +241,7 @@ exports.handleIVR = async (req, res) => {
           id: String(user._id),
           name: user.name,
           agentId: user.agentId,
+          routingReason: getAgentAvailabilityReason(user.agentId),
         })),
         availableUsers: availableDepartmentUsers.map((user) => user.agentId),
         selectedTarget: queueTarget?.agentId || null,
@@ -239,6 +264,10 @@ exports.handleIVR = async (req, res) => {
           department: routeConfig.department,
           fallbackAgents,
           availableFallbackAgents,
+          fallbackReasons: fallbackAgents.map((agentId) => ({
+            agentId,
+            reason: getAgentAvailabilityReason(agentId),
+          })),
           selectedTarget: agentToDial || null,
         })
       );
@@ -248,6 +277,17 @@ exports.handleIVR = async (req, res) => {
     // ❗ FALLBACK (NO AGENTS)
     // ==========================
     if (!agentToDial) {
+      console.log(
+        '[IVR queue no agent available]',
+        JSON.stringify({
+          digit,
+          department: routeConfig.department,
+          departmentReasons: eligibleDepartmentUsers.map((user) => ({
+            agentId: user.agentId,
+            reason: getAgentAvailabilityReason(user.agentId),
+          })),
+        })
+      );
       twiml.say(sayOptions, prompts.noAgents);
       return res.type('text/xml').send(twiml.toString());
     }
@@ -270,6 +310,7 @@ exports.handleIVR = async (req, res) => {
         department: routeConfig.department,
         selectedTarget: agentToDial,
         fallbackUsed,
+        routingReason: getAgentAvailabilityReason(agentToDial),
       })
     );
 
