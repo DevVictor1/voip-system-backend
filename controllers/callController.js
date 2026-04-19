@@ -6,6 +6,8 @@ const {
   IVR_DEPARTMENT_ROUTES,
 } = require('../config/chatConfig');
 
+const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answer'];
+
 const normalizeLang = (lang) => (lang === 'vi' ? 'vi' : 'en');
 
 const SAY_OPTIONS = {
@@ -78,12 +80,12 @@ const resolveEligibleDepartmentUsers = async (department) => {
   }
 
   const users = await User.find({
-    role: 'agent',
+    role: { $in: ['agent', 'admin'] },
     department,
     isActive: true,
     agentId: { $type: 'string', $ne: '' },
   })
-    .select('name agentId department isActive')
+    .select('name role agentId department isActive maxConcurrentCalls')
     .sort({ name: 1, createdAt: 1 });
 
   const seenAgentIds = new Set();
@@ -98,8 +100,87 @@ const resolveEligibleDepartmentUsers = async (department) => {
   });
 };
 
-const selectQueueTarget = (users = []) => {
-  return users.find((user) => isAgentAvailable(user?.agentId)) || null;
+const resolveActiveCallCounts = async (agentIds = []) => {
+  const uniqueAgentIds = dedupeAgentIds(agentIds);
+
+  if (uniqueAgentIds.length === 0) {
+    return {};
+  }
+
+  const counts = await Call.aggregate([
+    {
+      $match: {
+        assignedAgentId: { $in: uniqueAgentIds },
+        status: { $nin: FINAL_CALL_STATUSES },
+      },
+    },
+    {
+      $group: {
+        _id: '$assignedAgentId',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  return counts.reduce((acc, item) => {
+    if (item?._id) {
+      acc[item._id] = item.count || 0;
+    }
+    return acc;
+  }, {});
+};
+
+const selectQueueTarget = async (users = []) => {
+  const availableUsers = users
+    .filter((user) => isAgentAvailable(user?.agentId))
+    .filter((user) => {
+      const maxConcurrentCalls = Number.isFinite(user?.maxConcurrentCalls)
+        ? user.maxConcurrentCalls
+        : 1;
+      return maxConcurrentCalls > 0;
+    });
+
+  if (availableUsers.length === 0) {
+    return {
+      target: null,
+      availableUsers: [],
+      activeCallCounts: {},
+    };
+  }
+
+  const activeCallCounts = await resolveActiveCallCounts(
+    availableUsers.map((user) => user.agentId)
+  );
+
+  const rankedUsers = availableUsers
+    .map((user) => {
+      const activeCallCount = activeCallCounts[user.agentId] || 0;
+      const maxConcurrentCalls = Number.isFinite(user?.maxConcurrentCalls)
+        ? user.maxConcurrentCalls
+        : 1;
+
+      return {
+        ...user.toObject(),
+        activeCallCount,
+        maxConcurrentCalls,
+      };
+    })
+    .filter((user) => user.activeCallCount < user.maxConcurrentCalls)
+    .sort((left, right) => {
+      if (left.activeCallCount !== right.activeCallCount) {
+        return left.activeCallCount - right.activeCallCount;
+      }
+
+      const leftName = String(left.name || '');
+      const rightName = String(right.name || '');
+      return leftName.localeCompare(rightName);
+    });
+
+  return {
+    target: rankedUsers[0] || null,
+    availableUsers: rankedUsers,
+    activeCallCounts,
+  };
 };
 
 const resolveLegacyFallbackAgents = (routeConfig) => {
@@ -227,8 +308,11 @@ exports.handleIVR = async (req, res) => {
     }
 
     const eligibleDepartmentUsers = await resolveEligibleDepartmentUsers(routeConfig.department);
-    const availableDepartmentUsers = eligibleDepartmentUsers.filter((user) => isAgentAvailable(user.agentId));
-    const queueTarget = selectQueueTarget(eligibleDepartmentUsers);
+    const {
+      target: queueTarget,
+      availableUsers: availableDepartmentUsers,
+      activeCallCounts,
+    } = await selectQueueTarget(eligibleDepartmentUsers);
 
     console.log(
       '[IVR queue]',
@@ -238,10 +322,17 @@ exports.handleIVR = async (req, res) => {
         eligibleUsers: eligibleDepartmentUsers.map((user) => ({
           id: String(user._id),
           name: user.name,
+          role: user.role,
           agentId: user.agentId,
+          maxConcurrentCalls: Number.isFinite(user.maxConcurrentCalls) ? user.maxConcurrentCalls : 1,
           routingReason: getAgentAvailabilityReason(user.agentId),
+          activeCallCount: activeCallCounts[user.agentId] || 0,
         })),
-        availableUsers: availableDepartmentUsers.map((user) => user.agentId),
+        availableUsers: availableDepartmentUsers.map((user) => ({
+          agentId: user.agentId,
+          activeCallCount: user.activeCallCount,
+          maxConcurrentCalls: user.maxConcurrentCalls,
+        })),
         selectedTarget: queueTarget?.agentId || null,
       })
     );
@@ -301,6 +392,16 @@ exports.handleIVR = async (req, res) => {
       contact,
     });
 
+    await Call.findOneAndUpdate(
+      { callSid: CallSid },
+      {
+        assignedAgentId: agentToDial,
+        assignedDepartment: routeConfig.department,
+        fallbackUsed,
+      },
+      { returnDocument: 'after' }
+    );
+
     console.log(
       '[IVR queue connect]',
       JSON.stringify({
@@ -308,6 +409,7 @@ exports.handleIVR = async (req, res) => {
         department: routeConfig.department,
         selectedTarget: agentToDial,
         fallbackUsed,
+        activeCallCount: activeCallCounts[agentToDial] || 0,
         routingReason: getAgentAvailabilityReason(agentToDial),
       })
     );
@@ -428,9 +530,7 @@ exports.handleCallStatus = async (req, res) => {
         status: CallStatus,
       });
 
-      if (
-        ['completed', 'canceled', 'failed', 'busy', 'no-answer'].includes(CallStatus)
-      ) {
+      if (FINAL_CALL_STATUSES.includes(CallStatus)) {
         global.io.emit('callEnded', { callSid: CallSid });
       }
     }
