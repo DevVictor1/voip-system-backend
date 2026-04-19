@@ -7,6 +7,8 @@ const {
 } = require('../config/chatConfig');
 
 const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answer'];
+const RETRYABLE_DIAL_STATUSES = ['busy', 'failed', 'no-answer', 'canceled'];
+const DEFAULT_DIAL_TIMEOUT_SECONDS = 20;
 
 const normalizeLang = (lang) => (lang === 'vi' ? 'vi' : 'en');
 
@@ -37,6 +39,16 @@ const PROMPTS = {
 };
 
 const buildIvrUrl = (step, lang) => `/api/calls/ivr?step=${step}&lang=${normalizeLang(lang)}`;
+const buildRetryIvrUrl = ({ lang, digit, callSid }) => {
+  const params = new URLSearchParams({
+    step: 'retry',
+    lang: normalizeLang(lang),
+    digit: String(digit || ''),
+    callSid: String(callSid || ''),
+  });
+
+  return `/api/calls/ivr?${params.toString()}`;
+};
 
 const isAgentAvailable = (agentId) => {
   if (!agentId) {
@@ -187,6 +199,93 @@ const resolveLegacyFallbackAgents = (routeConfig) => {
   return dedupeAgentIds(routeConfig?.fallbackAgents || []);
 };
 
+const buildDialTimeoutSeconds = () => {
+  const parsed = Number(process.env.TWILIO_AGENT_DIAL_TIMEOUT || DEFAULT_DIAL_TIMEOUT_SECONDS);
+  if (!Number.isFinite(parsed) || parsed < 5) {
+    return DEFAULT_DIAL_TIMEOUT_SECONDS;
+  }
+
+  return Math.floor(parsed);
+};
+
+const buildCandidatePlan = async (routeConfig) => {
+  const eligibleDepartmentUsers = await resolveEligibleDepartmentUsers(routeConfig?.department);
+  const {
+    target: queueTarget,
+    availableUsers: availableDepartmentUsers,
+    activeCallCounts,
+  } = await selectQueueTarget(eligibleDepartmentUsers);
+  const queueCandidates = dedupeAgentIds(
+    availableDepartmentUsers.map((user) => user.agentId)
+  );
+  const fallbackCandidates = resolveLegacyFallbackAgents(routeConfig);
+
+  return {
+    eligibleDepartmentUsers,
+    queueTarget,
+    availableDepartmentUsers,
+    activeCallCounts,
+    queueCandidates,
+    fallbackCandidates,
+  };
+};
+
+const findNextAvailableAgentId = (candidateIds = [], attemptedAgentIds = []) => {
+  const attempted = new Set(dedupeAgentIds(attemptedAgentIds));
+  return dedupeAgentIds(candidateIds).find((agentId) => (
+    !attempted.has(agentId) && isAgentAvailable(agentId)
+  )) || '';
+};
+
+const persistRoutingAttempt = async ({
+  callSid,
+  agentId,
+  department,
+  fallbackUsed,
+  queueCandidates,
+  fallbackCandidates,
+  attemptedAgentIds,
+}) => {
+  const nextAttemptedAgentIds = dedupeAgentIds([...(attemptedAgentIds || []), agentId]);
+
+  return Call.findOneAndUpdate(
+    { callSid },
+    {
+      assignedAgentId: agentId,
+      assignedDepartment: department || null,
+      fallbackUsed: Boolean(fallbackUsed),
+      queueCandidates: dedupeAgentIds(queueCandidates || []),
+      fallbackCandidates: dedupeAgentIds(fallbackCandidates || []),
+      attemptedAgentIds: nextAttemptedAgentIds,
+      retryCount: Math.max(0, nextAttemptedAgentIds.length - 1),
+      lastAttemptedAgentId: agentId || null,
+      status: 'ringing',
+    },
+    { returnDocument: 'after' }
+  );
+};
+
+const dialAgentClient = ({
+  twiml,
+  agentId,
+  currentLang,
+  digit,
+  callSid,
+}) => {
+  const dial = twiml.dial({
+    callerId: process.env.TWILIO_PHONE_NUMBER,
+    record: 'record-from-answer-dual',
+    timeout: buildDialTimeoutSeconds(),
+    action: buildRetryIvrUrl({ lang: currentLang, digit, callSid }),
+    method: 'POST',
+    recordingStatusCallback: 'https://voip-system-backend.onrender.com/api/calls/recording-status',
+    recordingStatusCallbackMethod: 'POST',
+    recordingStatusCallbackEvent: 'completed',
+  });
+
+  dial.client(agentId);
+};
+
 const emitIncomingCallPopup = ({ agentId, CallSid, From, To, contact }) => {
   const socketId = global.connectedUsers?.[agentId];
 
@@ -221,7 +320,7 @@ const normalizePhone = (phone) => {
 exports.handleIVR = async (req, res) => {
   const twiml = new VoiceResponse();
 
-  const digit = req.body.Digits;
+  const digit = String(req.body.Digits || req.query.digit || '');
   const step = req.query.step || 'lang';
   const currentLang = normalizeLang(req.query.lang);
   const sayOptions = SAY_OPTIONS[currentLang];
@@ -307,12 +406,14 @@ exports.handleIVR = async (req, res) => {
       return res.type('text/xml').send(twiml.toString());
     }
 
-    const eligibleDepartmentUsers = await resolveEligibleDepartmentUsers(routeConfig.department);
     const {
-      target: queueTarget,
-      availableUsers: availableDepartmentUsers,
+      eligibleDepartmentUsers,
+      queueTarget,
+      availableDepartmentUsers,
       activeCallCounts,
-    } = await selectQueueTarget(eligibleDepartmentUsers);
+      queueCandidates,
+      fallbackCandidates,
+    } = await buildCandidatePlan(routeConfig);
 
     console.log(
       '[IVR queue]',
@@ -334,6 +435,8 @@ exports.handleIVR = async (req, res) => {
           maxConcurrentCalls: user.maxConcurrentCalls,
         })),
         selectedTarget: queueTarget?.agentId || null,
+        queueCandidates,
+        fallbackCandidates,
       })
     );
 
@@ -341,8 +444,7 @@ exports.handleIVR = async (req, res) => {
     let fallbackUsed = false;
 
     if (!agentToDial) {
-      const fallbackAgents = resolveLegacyFallbackAgents(routeConfig);
-      const availableFallbackAgents = fallbackAgents.filter((agentId) => isAgentAvailable(agentId));
+      const availableFallbackAgents = fallbackCandidates.filter((agentId) => isAgentAvailable(agentId));
       agentToDial = availableFallbackAgents[0] || '';
       fallbackUsed = Boolean(agentToDial);
 
@@ -351,9 +453,9 @@ exports.handleIVR = async (req, res) => {
         JSON.stringify({
           digit,
           department: routeConfig.department,
-          fallbackAgents,
+          fallbackAgents: fallbackCandidates,
           availableFallbackAgents,
-          fallbackReasons: fallbackAgents.map((agentId) => ({
+          fallbackReasons: fallbackCandidates.map((agentId) => ({
             agentId,
             reason: getAgentAvailabilityReason(agentId),
           })),
@@ -392,21 +494,22 @@ exports.handleIVR = async (req, res) => {
       contact,
     });
 
-    await Call.findOneAndUpdate(
-      { callSid: CallSid },
-      {
-        assignedAgentId: agentToDial,
-        assignedDepartment: routeConfig.department,
-        fallbackUsed,
-      },
-      { returnDocument: 'after' }
-    );
+    await persistRoutingAttempt({
+      callSid: CallSid,
+      agentId: agentToDial,
+      department: routeConfig.department,
+      fallbackUsed,
+      queueCandidates,
+      fallbackCandidates,
+      attemptedAgentIds: [],
+    });
 
     console.log(
       '[IVR queue connect]',
       JSON.stringify({
         digit,
         department: routeConfig.department,
+        attemptNumber: 1,
         selectedTarget: agentToDial,
         fallbackUsed,
         activeCallCount: activeCallCounts[agentToDial] || 0,
@@ -415,17 +518,142 @@ exports.handleIVR = async (req, res) => {
     );
 
     twiml.say(sayOptions, prompts.connecting);
-
-    const dial = twiml.dial({
-      callerId: process.env.TWILIO_PHONE_NUMBER,
-      record: 'record-from-answer-dual',
-      recordingStatusCallback: 'https://voip-system-backend.onrender.com/api/calls/recording-status',
-      recordingStatusCallbackMethod: 'POST',
-      recordingStatusCallbackEvent: 'completed',
+    dialAgentClient({
+      twiml,
+      agentId: agentToDial,
+      currentLang,
+      digit,
+      callSid: CallSid,
     });
 
-    // 🔥 RING ONLY AVAILABLE AGENTS
-    dial.client(agentToDial);
+    return res.type('text/xml').send(twiml.toString());
+  }
+
+  if (step === 'retry') {
+    const CallSid = String(req.query.callSid || req.body.CallSid || '');
+    const dialStatus = String(req.body.DialCallStatus || '').trim().toLowerCase();
+    const dialCallSid = String(req.body.DialCallSid || '');
+    const routeConfig = IVR_DEPARTMENT_ROUTES[digit];
+
+    if (!CallSid || !routeConfig) {
+      twiml.say(sayOptions, prompts.noAgents);
+      return res.type('text/xml').send(twiml.toString());
+    }
+
+    const parentCall = await Call.findOne({ callSid: CallSid });
+
+    if (!parentCall) {
+      twiml.say(sayOptions, prompts.noAgents);
+      return res.type('text/xml').send(twiml.toString());
+    }
+
+    console.log(
+      '[IVR retry status]',
+      JSON.stringify({
+        callSid: CallSid,
+        department: routeConfig.department,
+        dialStatus,
+        dialCallSid: dialCallSid || null,
+        lastAttemptedAgentId: parentCall.lastAttemptedAgentId || null,
+        attemptedAgentIds: parentCall.attemptedAgentIds || [],
+      })
+    );
+
+    if (!RETRYABLE_DIAL_STATUSES.includes(dialStatus)) {
+      if (dialStatus) {
+        await Call.findOneAndUpdate(
+          { callSid: CallSid },
+          { status: dialStatus },
+          { returnDocument: 'after' }
+        );
+      }
+
+      return res.type('text/xml').send(twiml.toString());
+    }
+
+    const attemptedAgentIds = dedupeAgentIds(parentCall.attemptedAgentIds || []);
+    const queueCandidates = dedupeAgentIds(parentCall.queueCandidates || []);
+    const fallbackCandidates = dedupeAgentIds(parentCall.fallbackCandidates || []);
+
+    const nextQueueAgentId = findNextAvailableAgentId(queueCandidates, attemptedAgentIds);
+    const nextFallbackAgentId = nextQueueAgentId
+      ? ''
+      : findNextAvailableAgentId(fallbackCandidates, attemptedAgentIds);
+    const nextAgentId = nextQueueAgentId || nextFallbackAgentId;
+    const fallbackUsed = Boolean(!nextQueueAgentId && nextFallbackAgentId);
+
+    console.log(
+      '[IVR retry decision]',
+      JSON.stringify({
+        callSid: CallSid,
+        department: routeConfig.department,
+        attemptNumber: attemptedAgentIds.length + 1,
+        dialStatus,
+        nextQueueAgentId: nextQueueAgentId || null,
+        nextFallbackAgentId: nextFallbackAgentId || null,
+        nextAgentId: nextAgentId || null,
+      })
+    );
+
+    if (!nextAgentId) {
+      await Call.findOneAndUpdate(
+        { callSid: CallSid },
+        { status: dialStatus || 'no-answer' },
+        { returnDocument: 'after' }
+      );
+
+      console.log(
+        '[IVR retry exhausted]',
+        JSON.stringify({
+          callSid: CallSid,
+          department: routeConfig.department,
+          attemptedAgentIds,
+          dialStatus,
+        })
+      );
+
+      twiml.say(sayOptions, prompts.noAgents);
+      return res.type('text/xml').send(twiml.toString());
+    }
+
+    emitIncomingCallPopup({
+      agentId: nextAgentId,
+      CallSid,
+      From: parentCall.from,
+      To: parentCall.to,
+      contact: null,
+    });
+
+    await persistRoutingAttempt({
+      callSid: CallSid,
+      agentId: nextAgentId,
+      department: routeConfig.department,
+      fallbackUsed,
+      queueCandidates,
+      fallbackCandidates,
+      attemptedAgentIds,
+    });
+
+    console.log(
+      '[IVR retry connect]',
+      JSON.stringify({
+        callSid: CallSid,
+        department: routeConfig.department,
+        attemptNumber: attemptedAgentIds.length + 1,
+        agentId: nextAgentId,
+        fallbackUsed,
+        retryReason: dialStatus,
+      })
+    );
+
+    twiml.say(sayOptions, prompts.connecting);
+    dialAgentClient({
+      twiml,
+      agentId: nextAgentId,
+      currentLang,
+      digit,
+      callSid: CallSid,
+    });
 
     return res.type('text/xml').send(twiml.toString());
   }
@@ -523,6 +751,16 @@ exports.handleCallStatus = async (req, res) => {
       },
       { upsert: true, returnDocument: 'after' }
     );
+
+    if (ParentCallSid && FINAL_CALL_STATUSES.includes(CallStatus)) {
+      await Call.findOneAndUpdate(
+        { callSid: ParentCallSid },
+        {
+          status: CallStatus,
+        },
+        { returnDocument: 'after' }
+      );
+    }
 
     if (global.io && updated) {
       global.io.emit('callStatus', {
