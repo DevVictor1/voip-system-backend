@@ -32,6 +32,15 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    textingGroupId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    textingGroupName: {
+      type: String,
+      default: null,
+    },
     senderId: {
       type: String,
       default: null,

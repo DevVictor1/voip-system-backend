@@ -17,6 +17,16 @@ const contactSchema = new mongoose.Schema(
 
   dba: String,
   mid: String,
+  textingGroupId: {
+    type: String,
+    default: null,
+    trim: true,
+  },
+  textingGroupName: {
+    type: String,
+    default: null,
+    trim: true,
+  },
 
   // Shared inbox assignment identity
   assignedTo: {

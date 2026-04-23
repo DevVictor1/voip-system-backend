@@ -1,6 +1,7 @@
 const Message = require('../models/Message');
 const Contact = require('../models/Contact');
 const User = require('../models/User');
+const TextingGroup = require('../models/TextingGroup');
 const twilio = require('twilio');
 const { parsePhoneNumberFromString } = require('libphonenumber-js');
 const {
@@ -47,10 +48,23 @@ const ensureAbsoluteHttpsUrl = (value) => {
   return `https://${trimmed}`;
 };
 
-const CUSTOMER_MESSAGE_QUERY = {
+const BASE_CUSTOMER_MESSAGE_QUERY = {
   $or: [
     { conversationType: { $exists: false } },
     { conversationType: 'customer' },
+  ],
+};
+
+const DIRECT_CUSTOMER_MESSAGE_QUERY = {
+  $and: [
+    BASE_CUSTOMER_MESSAGE_QUERY,
+    {
+      $or: [
+        { textingGroupId: { $exists: false } },
+        { textingGroupId: null },
+        { textingGroupId: '' },
+      ],
+    },
   ],
 };
 
@@ -60,6 +74,83 @@ const findContactByPhone = async (phone) => {
   return Contact.findOne({
     'phones.number': normalized,
   });
+};
+
+const normalizeAssignedNumber = (value) => normalize(value || '');
+
+const findTextingGroupBySlug = async (groupId) => {
+  if (!groupId) return null;
+
+  return TextingGroup.findOne({
+    slug: String(groupId).trim().toLowerCase(),
+    isActive: true,
+  });
+};
+
+const findTextingGroupByAssignedNumber = async (phoneNumber) => {
+  const normalized = normalizeAssignedNumber(phoneNumber);
+  if (!normalized) return null;
+
+  return TextingGroup.findOne({
+    assignedNumber: normalized,
+    isActive: true,
+  });
+};
+
+const getTextingGroupAccessQuery = (userId, role) => {
+  if (role === 'admin') {
+    return { isActive: true };
+  }
+
+  return {
+    isActive: true,
+    members: userId,
+  };
+};
+
+const resolveTextingGroup = async ({ contact, assignedNumber }) => {
+  const contactGroupId = String(contact?.textingGroupId || '').trim().toLowerCase();
+
+  if (contactGroupId) {
+    const matchedGroup = await findTextingGroupBySlug(contactGroupId);
+    if (matchedGroup) {
+      return matchedGroup;
+    }
+  }
+
+  return findTextingGroupByAssignedNumber(assignedNumber);
+};
+
+const getCounterpartPhoneForMessage = (message) => {
+  if (!message) return '';
+  const isOutgoing = message.direction === 'outbound';
+  return normalize(isOutgoing ? message.to : message.from);
+};
+
+const getTextingGroupThreadQuery = (groupId, phone) => {
+  const normalizedPhone = normalize(phone);
+
+  return {
+    $and: [
+      BASE_CUSTOMER_MESSAGE_QUERY,
+      { textingGroupId: String(groupId || '').trim().toLowerCase() },
+      {
+        $or: [
+          { from: normalizedPhone },
+          { to: normalizedPhone },
+          { conversationId: normalizedPhone },
+        ],
+      },
+    ],
+  };
+};
+
+const getTextingGroupContactPayload = (contact, group) => {
+  if (!contact || !group) return null;
+
+  contact.textingGroupId = group.slug;
+  contact.textingGroupName = group.name;
+  return contact.save();
 };
 
 const findOrCreateContactByPhone = async (phone) => {
@@ -225,9 +316,17 @@ exports.receiveSMS = async (req, res) => {
     console.log('Incoming SMS:', From, Body);
 
     let contact = await findOrCreateContactByPhone(From);
+    const textingGroup = await resolveTextingGroup({
+      contact,
+      assignedNumber: To,
+    });
 
     if (contact) {
       contact = await tryReopenContact(contact) || contact;
+    }
+
+    if (contact && textingGroup) {
+      contact = await getTextingGroupContactPayload(contact, textingGroup) || contact;
     }
 
     if (contact && !hasAssignedAgent(contact)) {
@@ -244,8 +343,11 @@ exports.receiveSMS = async (req, res) => {
       direction: 'inbound',
       conversationType: 'customer',
       conversationId: normalize(From),
+      textingGroupId: textingGroup?.slug || null,
+      textingGroupName: textingGroup?.name || null,
       source: 'sms',
       read: false,
+      readBy: [],
       status: 'received',
     });
 
@@ -262,7 +364,7 @@ exports.receiveSMS = async (req, res) => {
 
 exports.sendSMS = async (req, res) => {
   try {
-    const { to, body, message, mediaUrl } = req.body;
+    const { to, body, message, mediaUrl, textingGroupId, userId, senderName } = req.body;
     const text = body || message;
 
     if (!to || (!text && !mediaUrl)) {
@@ -276,6 +378,21 @@ exports.sendSMS = async (req, res) => {
       return res.status(400).json({ error: 'Invalid phone number' });
     }
 
+    const textingGroup = textingGroupId
+      ? await findTextingGroupBySlug(textingGroupId)
+      : null;
+
+    if (textingGroupId && !textingGroup) {
+      return res.status(404).json({ error: 'Texting group not found' });
+    }
+
+    if (textingGroup && userId) {
+      const canUseGroup = textingGroup.members.includes(String(userId)) || req.body?.role === 'admin';
+      if (!canUseGroup) {
+        return res.status(403).json({ error: 'You are not a member of this texting group' });
+      }
+    }
+
     console.log('Sending SMS to:', formattedTo);
 
     const mediaList = mediaUrl
@@ -284,7 +401,7 @@ exports.sendSMS = async (req, res) => {
 
     const payload = {
       body: text,
-      from: process.env.TWILIO_PHONE_NUMBER,
+      from: textingGroup?.assignedNumber || process.env.TWILIO_PHONE_NUMBER,
       to: formattedTo,
       mediaUrl: mediaList,
     };
@@ -296,20 +413,30 @@ exports.sendSMS = async (req, res) => {
 
     const twilioRes = await client.messages.create(payload);
 
+    const contact = await findOrCreateContactByPhone(normalizedTo);
+    if (contact && textingGroup) {
+      await getTextingGroupContactPayload(contact, textingGroup);
+    }
+
     const saved = await Message.create({
       sid: twilioRes.sid,
-      from: normalize(process.env.TWILIO_PHONE_NUMBER),
+      from: normalize(textingGroup?.assignedNumber || process.env.TWILIO_PHONE_NUMBER),
       to: normalizedTo,
-      fromFull: process.env.TWILIO_PHONE_NUMBER,
+      fromFull: textingGroup?.assignedNumber || process.env.TWILIO_PHONE_NUMBER,
       toFull: to,
       body: text,
       media: mediaList || [],
       direction: 'outbound',
       conversationType: 'customer',
       conversationId: normalizedTo,
+      textingGroupId: textingGroup?.slug || null,
+      textingGroupName: textingGroup?.name || null,
+      senderId: userId || null,
+      senderName: senderName || null,
       source: 'sms',
       status: twilioRes.status || 'queued',
       read: true,
+      readBy: userId ? [String(userId)] : [],
     });
 
     if (global.io) {
@@ -348,7 +475,7 @@ exports.smsStatusCallback = async (req, res) => {
 
 exports.getConversations = async (req, res) => {
   try {
-    const messages = await Message.find(CUSTOMER_MESSAGE_QUERY).sort({ createdAt: -1 });
+    const messages = await Message.find(DIRECT_CUSTOMER_MESSAGE_QUERY).sort({ createdAt: -1 });
     const conversations = {};
 
     for (const msg of messages) {
@@ -388,12 +515,189 @@ exports.getConversations = async (req, res) => {
   }
 };
 
+exports.getTextingGroups = async (req, res) => {
+  try {
+    const userId = String(req.query?.userId || '').trim();
+    const role = String(req.query?.role || '').trim().toLowerCase();
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Missing userId' });
+    }
+
+    const groups = await TextingGroup.find(getTextingGroupAccessQuery(userId, role))
+      .sort({ updatedAt: -1, name: 1 });
+
+    const groupIds = groups.map((group) => group.slug);
+    const messages = groupIds.length > 0
+      ? await Message.find({
+          ...BASE_CUSTOMER_MESSAGE_QUERY,
+          textingGroupId: { $in: groupIds },
+        }).sort({ createdAt: -1 })
+      : [];
+
+    const summaries = groups.map((group) => {
+      const relatedMessages = messages.filter((message) => message.textingGroupId === group.slug);
+      const latestMessage = relatedMessages[0] || null;
+      const unreadCount = relatedMessages.reduce((count, message) => {
+        if (message.direction !== 'inbound') return count;
+        if ((message.readBy || []).includes(userId)) return count;
+        return count + 1;
+      }, 0);
+
+      return {
+        id: group.slug,
+        groupId: group.slug,
+        name: group.name,
+        assignedNumber: group.assignedNumber || '',
+        members: group.members || [],
+        memberCount: (group.members || []).length,
+        unread: unreadCount,
+        lastMessage: latestMessage?.body || '',
+        updatedAt: latestMessage?.createdAt || group.updatedAt,
+      };
+    });
+
+    res.json(summaries);
+  } catch (error) {
+    console.error('Texting groups error:', error);
+    res.status(500).json({ error: 'Failed to load texting groups' });
+  }
+};
+
+exports.getTextingGroupConversations = async (req, res) => {
+  try {
+    const userId = String(req.query?.userId || '').trim();
+    const role = String(req.query?.role || '').trim().toLowerCase();
+    const groupId = String(req.params?.groupId || '').trim().toLowerCase();
+
+    if (!userId || !groupId) {
+      return res.status(400).json({ error: 'Missing group access data' });
+    }
+
+    const group = await TextingGroup.findOne({
+      slug: groupId,
+      ...getTextingGroupAccessQuery(userId, role),
+    });
+
+    if (!group) {
+      return res.status(404).json({ error: 'Texting group not found' });
+    }
+
+    const messages = await Message.find({
+      ...BASE_CUSTOMER_MESSAGE_QUERY,
+      textingGroupId: group.slug,
+    }).sort({ createdAt: -1 });
+
+    const conversations = {};
+
+    for (const msg of messages) {
+      const phone = getCounterpartPhoneForMessage(msg);
+      if (!phone) continue;
+
+      if (!conversations[phone]) {
+        const contact = await findContactByPhone(phone);
+        const fullName = contact
+          ? `${contact.firstName || ''} ${contact.lastName || ''}`.trim()
+          : '';
+
+        conversations[phone] = {
+          _id: contact?._id || null,
+          phone,
+          name: fullName || contact?.name || phone,
+          dba: contact?.dba || '',
+          mid: contact?.mid || '',
+          lastMessage: msg.body || '',
+          lastMessageSenderName: msg.direction === 'outbound' ? (msg.senderName || '') : '',
+          updatedAt: msg.createdAt,
+          unread: 0,
+          assignedTo: contact?.assignedTo || null,
+          isUnassigned: typeof contact?.isUnassigned === 'boolean'
+            ? contact.isUnassigned
+            : !contact?.assignedTo,
+          assignmentStatus: contact?.assignmentStatus || 'open',
+          textingGroupId: group.slug,
+          textingGroupName: group.name,
+          assignedNumber: group.assignedNumber || '',
+        };
+      }
+
+      if (msg.direction === 'inbound' && !(msg.readBy || []).includes(userId)) {
+        conversations[phone].unread += 1;
+      }
+    }
+
+    res.json(Object.values(conversations));
+  } catch (error) {
+    console.error('Texting group conversations error:', error);
+    res.status(500).json({ error: 'Failed to load texting group conversations' });
+  }
+};
+
+exports.getTextingGroupMessages = async (req, res) => {
+  try {
+    const userId = String(req.query?.userId || '').trim();
+    const role = String(req.query?.role || '').trim().toLowerCase();
+    const groupId = String(req.params?.groupId || '').trim().toLowerCase();
+    const phone = String(req.params?.phone || '').trim();
+
+    if (!userId || !groupId || !phone) {
+      return res.status(400).json({ error: 'Missing texting group thread data' });
+    }
+
+    const group = await TextingGroup.findOne({
+      slug: groupId,
+      ...getTextingGroupAccessQuery(userId, role),
+    });
+
+    if (!group) {
+      return res.status(404).json({ error: 'Texting group not found' });
+    }
+
+    const messages = await Message.find(
+      getTextingGroupThreadQuery(group.slug, phone)
+    ).sort({ createdAt: 1 });
+
+    res.json(messages);
+  } catch (error) {
+    console.error('Texting group messages error:', error);
+    res.status(500).json({ error: 'Failed to load texting group messages' });
+  }
+};
+
+exports.markTextingGroupRead = async (req, res) => {
+  try {
+    const userId = String(req.body?.userId || req.query?.userId || '').trim();
+    const groupId = String(req.params?.groupId || '').trim().toLowerCase();
+    const phone = String(req.params?.phone || '').trim();
+
+    if (!userId || !groupId || !phone) {
+      return res.status(400).json({ error: 'Missing texting group read data' });
+    }
+
+    await Message.updateMany(
+      {
+        ...getTextingGroupThreadQuery(groupId, phone),
+        direction: 'inbound',
+        readBy: { $ne: userId },
+      },
+      {
+        $addToSet: { readBy: userId },
+      }
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Texting group read error:', error);
+    res.status(500).json({ error: 'Failed to mark texting group read' });
+  }
+};
+
 exports.getMessages = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
 
     const messages = await Message.find({
-      ...CUSTOMER_MESSAGE_QUERY,
+      ...DIRECT_CUSTOMER_MESSAGE_QUERY,
       $or: [
         { from: normalized },
         { to: normalized },
@@ -414,7 +718,7 @@ exports.markAsRead = async (req, res) => {
 
     await Message.updateMany(
       {
-        ...CUSTOMER_MESSAGE_QUERY,
+        ...DIRECT_CUSTOMER_MESSAGE_QUERY,
         from: normalized,
         read: false,
       },
