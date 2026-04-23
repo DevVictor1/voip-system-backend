@@ -495,6 +495,7 @@ const buildInternalConversationMap = async (userId, role) => {
       name: team.name,
       role: 'Team Channel',
       lastMessage: '',
+      lastMessageSenderName: '',
       updatedAt: null,
       unread: 0,
       isInternal: true,
@@ -1120,6 +1121,7 @@ exports.getConversations = async (req, res) => {
             name: teamRecord?.name || message.teamName || message.conversationId,
             role: 'Team Channel',
             lastMessage: '',
+            lastMessageSenderName: '',
             updatedAt: null,
             unread: 0,
             isInternal: true,
@@ -1136,6 +1138,9 @@ exports.getConversations = async (req, res) => {
 
       if (!conversation.updatedAt || new Date(message.createdAt) > new Date(conversation.updatedAt)) {
         conversation.lastMessage = message.body || 'New message';
+        conversation.lastMessageSenderName = message.senderName
+          || getAgentMeta(message.senderId).name
+          || '';
         conversation.updatedAt = message.createdAt;
       }
 
