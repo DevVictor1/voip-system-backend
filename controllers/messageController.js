@@ -3,6 +3,7 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
 const {
+  INTERNAL_AGENTS,
   TEAM_CHANNELS,
   buildDmConversationId,
   getAgentMeta,
@@ -360,6 +361,18 @@ const getSortedParticipants = (participants = []) => {
   return [...new Set((participants || []).filter(Boolean))].sort();
 };
 
+const LEGACY_INTERNAL_AGENT_IDS = new Set(Object.keys(INTERNAL_AGENTS || {}));
+
+const getOtherParticipant = (participants = [], currentUserId = '') => {
+  return participants.find((participant) => participant !== currentUserId)
+    || participants[0]
+    || '';
+};
+
+const isLegacyInternalParticipant = (participantId = '') => {
+  return LEGACY_INTERNAL_AGENT_IDS.has(String(participantId || '').trim());
+};
+
 const parseLegacyDmConversationId = (conversationId) => {
   if (!conversationId || !conversationId.startsWith('dm:')) {
     return [];
@@ -554,6 +567,12 @@ exports.getConversations = async (req, res) => {
     }
 
     const conversations = await buildInternalConversationMap(userId, role);
+    const activeUsers = await getActiveInternalUsers();
+    const activeUserAgentIds = new Set(
+      activeUsers
+        .map((user) => normalizeUserIdValue(user?.agentId))
+        .filter(Boolean)
+    );
     const dmRecords = await Conversation.find({
       type: 'internal_dm',
       participants: userId,
@@ -567,7 +586,12 @@ exports.getConversations = async (req, res) => {
         dmRecord
       ) || dmRecord;
       const participants = getSortedParticipants(conversation.participants);
-      const otherAgentId = participants.find((participant) => participant !== userId) || conversation.createdBy;
+      const otherAgentId = getOtherParticipant(participants, userId) || conversation.createdBy;
+
+      if (!otherAgentId || isLegacyInternalParticipant(otherAgentId) || !activeUserAgentIds.has(otherAgentId)) {
+        continue;
+      }
+
       const otherAgent = getAgentMeta(otherAgentId);
       const conversationId = conversation.conversationId || buildDmConversationId(...participants);
 
@@ -607,9 +631,14 @@ exports.getConversations = async (req, res) => {
 
       if (!existing) {
         if (message.conversationType === 'internal_dm') {
-          const conversationRecord = await ensureDmConversationForMessage(message);
           const participants = (message.participants || []).filter(Boolean).sort();
-          const otherAgentId = participants.find((participant) => participant !== userId) || message.senderId;
+          const otherAgentId = getOtherParticipant(participants, userId) || message.senderId;
+
+          if (!otherAgentId || isLegacyInternalParticipant(otherAgentId) || !activeUserAgentIds.has(otherAgentId)) {
+            continue;
+          }
+
+          const conversationRecord = await ensureDmConversationForMessage(message);
           const otherAgent = getAgentMeta(otherAgentId);
           const resolvedConversationId = conversationRecord?.conversationId || message.conversationId;
 
