@@ -75,14 +75,28 @@ const sanitizeTeamSlug = (value = '') => (
     .replace(/^-+|-+$/g, '')
 );
 
-const isSystemManagedTeam = (team) => {
+const isConfiguredDefaultTeam = (team) => {
+  if (!team) return false;
+
+  return Boolean(
+    normalizeDepartment(team.department)
+    || findConfigTeamById(team.slug || team.id)
+  );
+};
+
+const isLegacyCustomSystemTeam = (team) => {
   if (!team) return false;
 
   return Boolean(
     team.createdBy === DEFAULT_TEAM_CREATOR
-    || normalizeDepartment(team.department)
-    || findConfigTeamById(team.slug || team.id)
+    && !isConfiguredDefaultTeam(team)
   );
+};
+
+const isSystemManagedTeam = (team) => {
+  if (!team) return false;
+
+  return isConfiguredDefaultTeam(team);
 };
 
 const ensureDefaultTeams = async () => {
@@ -102,6 +116,7 @@ const ensureDefaultTeams = async () => {
   await Team.updateMany(
     {
       createdBy: DEFAULT_TEAM_CREATOR,
+      department: { $in: ['tech', 'support', 'sales'] },
       slug: { $nin: configuredSlugs },
       isActive: true,
     },
@@ -321,6 +336,8 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
   }
 
   const manageable = !isSystemManagedTeam(team);
+  const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team)
+    && (role === 'admin' || members.includes(currentUserId));
 
   return {
     conversationId: team.slug || team.id,
@@ -332,9 +349,17 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     isSystemManaged: !manageable,
     canManage: manageable,
     canLeave: manageable && members.includes(currentUserId),
-    canDelete: manageable && (role === 'admin' || team.createdBy === currentUserId),
+    canDelete: manageable && (
+      role === 'admin'
+      || team.createdBy === currentUserId
+      || canManageLegacyCustomTeam
+    ),
     managementNote: manageable
-      ? ''
+      ? (
+        isLegacyCustomSystemTeam(team)
+          ? 'This group was created before ownership tracking was added. It is treated as a custom group for current members.'
+          : ''
+      )
       : 'This team is managed by workspace defaults and can only be viewed here.',
     members: members.map((agentId) => {
       const user = userDirectory[agentId];
@@ -785,7 +810,10 @@ exports.deleteTeamConversation = async (req, res) => {
       return res.status(400).json({ error: 'This team is managed by workspace defaults' });
     }
 
-    const canDelete = role === 'admin' || team.createdBy === userId;
+    const currentMembers = await resolveTeamMembers(team);
+    const canDelete = role === 'admin'
+      || team.createdBy === userId
+      || (isLegacyCustomSystemTeam(team) && currentMembers.includes(userId));
 
     if (!canDelete) {
       return res.status(403).json({ error: 'Only the group creator or an admin can delete this group' });
