@@ -4,6 +4,10 @@ const {
   getTeams,
   getConversationRecord,
   startDirectConversation,
+  createTeamConversation,
+  getTeamDetails,
+  updateTeamDetails,
+  leaveTeamConversation,
   getConversations,
   getThread,
   sendMessage,
@@ -15,6 +19,10 @@ const router = express.Router();
 router.get('/teams', getTeams);
 router.get('/conversation/:conversationId', getConversationRecord);
 router.post('/direct/start', startDirectConversation);
+router.post('/team', createTeamConversation);
+router.get('/team/:conversationId/details', getTeamDetails);
+router.put('/team/:conversationId/details', updateTeamDetails);
+router.post('/team/:conversationId/leave', leaveTeamConversation);
 router.get('/conversations', getConversations);
 router.get('/thread/:conversationId', getThread);
 router.post('/send', sendMessage);

@@ -67,6 +67,24 @@ const findConfigTeamById = (teamId) => {
   return TEAM_CHANNELS.find((team) => team.id === teamId) || null;
 };
 
+const sanitizeTeamSlug = (value = '') => (
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+);
+
+const isSystemManagedTeam = (team) => {
+  if (!team) return false;
+
+  return Boolean(
+    team.createdBy === DEFAULT_TEAM_CREATOR
+    || normalizeDepartment(team.department)
+    || findConfigTeamById(team.slug || team.id)
+  );
+};
+
 const ensureDefaultTeams = async () => {
   const configuredSlugs = TEAM_CHANNELS.map((team) => team.id);
 
@@ -157,7 +175,7 @@ const ensureTeamConversation = async (team) => {
       shouldSave = true;
     }
 
-    if (!conversation.title) {
+    if (!conversation.title || conversation.title !== team.name) {
       conversation.title = team.name;
       shouldSave = true;
     }
@@ -231,6 +249,125 @@ const findTeamByConversationId = async (conversationId) => {
   if (!team) return null;
 
   return cloneTeamRecordWithMembers(team, await resolveTeamMembers(team));
+};
+
+const getTeamByConversationId = async (conversationId) => {
+  if (!conversationId) return null;
+
+  const directMatch = await Team.findOne({
+    isActive: true,
+    slug: conversationId,
+  });
+
+  if (directMatch) {
+    return cloneTeamRecordWithMembers(directMatch, await resolveTeamMembers(directMatch));
+  }
+
+  const conversation = await Conversation.findOne({
+    type: 'team',
+    $or: [
+      { conversationId },
+      { teamId: conversationId },
+    ],
+  }).sort({ createdAt: 1 });
+
+  if (!conversation) {
+    return null;
+  }
+
+  const team = await Team.findOne({
+    slug: conversation.teamId || conversation.conversationId,
+    isActive: true,
+  });
+
+  if (!team) {
+    return null;
+  }
+
+  return cloneTeamRecordWithMembers(team, await resolveTeamMembers(team));
+};
+
+const buildTeamMemberDirectory = async () => {
+  const users = await getActiveInternalUsers();
+  return users.reduce((acc, user) => {
+    if (user?.agentId) {
+      acc[user.agentId] = user;
+    }
+    return acc;
+  }, {});
+};
+
+const buildTeamDetailsPayload = async (team, currentUserId, role) => {
+  const members = await resolveTeamMembers(team);
+  const userDirectory = await buildTeamMemberDirectory();
+  const canAccess = role === 'admin' || members.includes(currentUserId);
+
+  if (!canAccess) {
+    return null;
+  }
+
+  const manageable = !isSystemManagedTeam(team);
+
+  return {
+    conversationId: team.slug || team.id,
+    teamId: team.slug || team.id,
+    teamName: team.name,
+    memberCount: members.length,
+    createdBy: team.createdBy || '',
+    department: normalizeDepartment(team.department) || '',
+    isSystemManaged: !manageable,
+    canManage: manageable,
+    canLeave: manageable && members.includes(currentUserId),
+    managementNote: manageable
+      ? ''
+      : 'This team is managed by workspace defaults and can only be viewed here.',
+    members: members.map((agentId) => {
+      const user = userDirectory[agentId];
+      const fallbackMeta = getAgentMeta(agentId);
+      const departmentLabel = teamDepartmentLabel(user?.department || fallbackMeta?.department || '');
+
+      return {
+        agentId,
+        name: user?.name || fallbackMeta?.name || agentId,
+        role: departmentLabel || (user?.role === 'admin' ? 'Admin' : user?.role || fallbackMeta?.role || 'Teammate'),
+        department: departmentLabel,
+        isCurrentUser: agentId === currentUserId,
+      };
+    }),
+  };
+};
+
+const resolveValidParticipantIds = async (participantIds = [], { includeCurrentUser = '' } = {}) => {
+  const normalized = getSortedParticipants([
+    ...participantIds,
+    ...(includeCurrentUser ? [includeCurrentUser] : []),
+  ]);
+
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const activeUsers = await User.find({
+    isActive: true,
+    agentId: { $in: normalized },
+  }).select('agentId');
+
+  const validIds = new Set(activeUsers.map((user) => user.agentId).filter(Boolean));
+
+  return normalized.filter((agentId) => validIds.has(agentId));
+};
+
+const generateUniqueTeamSlug = async (name) => {
+  const base = sanitizeTeamSlug(name) || 'team-chat';
+  let slug = base;
+  let suffix = 2;
+
+  while (await Team.exists({ slug })) {
+    slug = `${base}-${suffix}`;
+    suffix += 1;
+  }
+
+  return slug;
 };
 
 const syncConversationSummary = async (conversationId, type, conversationRecord = null) => {
@@ -554,6 +691,209 @@ exports.startDirectConversation = async (req, res) => {
   } catch (error) {
     console.error('❌ Start direct conversation error:', error);
     res.status(500).json({ error: 'Failed to start direct conversation' });
+  }
+};
+
+exports.createTeamConversation = async (req, res) => {
+  try {
+    const userId = await normalizeUserId(req.body?.userId);
+    const role = resolveRole(req.body?.role);
+    const teamName = String(req.body?.teamName || '').trim();
+    const participantIds = Array.isArray(req.body?.participantIds) ? req.body.participantIds : [];
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    if (!teamName) {
+      return res.status(400).json({ error: 'Group name is required' });
+    }
+
+    const members = await resolveValidParticipantIds(participantIds, { includeCurrentUser: userId });
+
+    if (members.length < 2) {
+      return res.status(400).json({ error: 'Select at least one teammate' });
+    }
+
+    const slug = await generateUniqueTeamSlug(teamName);
+    const team = await Team.create({
+      name: teamName,
+      slug,
+      members,
+      department: null,
+      createdBy: userId,
+      isActive: true,
+    });
+
+    const conversation = await ensureTeamConversation(team);
+    const payload = await buildTeamDetailsPayload(team, userId, role);
+
+    return res.status(201).json({
+      ...payload,
+      conversationType: 'team',
+      type: 'team',
+      id: conversation?.conversationId || team.slug,
+      conversationId: conversation?.conversationId || team.slug,
+      teamId: team.slug,
+      name: team.name,
+      role: 'Group chat',
+      lastMessage: '',
+      updatedAt: conversation?.updatedAt || team.updatedAt,
+      unread: 0,
+      isInternal: true,
+      isTeam: true,
+      previewFallback: `Start the conversation in ${team.name}`,
+    });
+  } catch (error) {
+    console.error('❌ Create team conversation error:', error);
+    res.status(500).json({ error: 'Failed to create group chat' });
+  }
+};
+
+exports.getTeamDetails = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.query.userId);
+    const role = resolveRole(req.query.role);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const payload = await buildTeamDetailsPayload(team, userId, role);
+
+    if (!payload) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    return res.json(payload);
+  } catch (error) {
+    console.error('❌ Team details error:', error);
+    res.status(500).json({ error: 'Failed to fetch team details' });
+  }
+};
+
+exports.updateTeamDetails = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId);
+    const role = resolveRole(req.body?.role);
+    const nextName = String(req.body?.teamName || '').trim();
+    const requestedMemberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : null;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const currentMembers = await resolveTeamMembers(team);
+    const canAccess = role === 'admin' || currentMembers.includes(userId);
+
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    if (isSystemManagedTeam(team)) {
+      return res.status(400).json({ error: 'This team is managed by workspace defaults' });
+    }
+
+    if (nextName) {
+      team.name = nextName;
+    }
+
+    if (requestedMemberIds) {
+      const nextMembers = await resolveValidParticipantIds(requestedMemberIds);
+
+      if (nextMembers.length === 0) {
+        return res.status(400).json({ error: 'A group must have at least one member' });
+      }
+
+      team.members = nextMembers;
+    }
+
+    await team.save();
+    const conversation = await ensureTeamConversation(team);
+    await syncConversationSummary(conversation?.conversationId || team.slug, 'team', conversation);
+
+    const payload = await buildTeamDetailsPayload(team, userId, role);
+    return res.json(payload);
+  } catch (error) {
+    console.error('❌ Update team details error:', error);
+    res.status(500).json({ error: 'Failed to update team details' });
+  }
+};
+
+exports.leaveTeamConversation = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    if (isSystemManagedTeam(team)) {
+      return res.status(400).json({ error: 'This team is managed by workspace defaults' });
+    }
+
+    const currentMembers = await resolveTeamMembers(team);
+
+    if (!currentMembers.includes(userId)) {
+      return res.status(400).json({ error: 'You are not a member of this group' });
+    }
+
+    const remainingMembers = currentMembers.filter((memberId) => memberId !== userId);
+
+    if (remainingMembers.length === 0) {
+      team.members = [];
+      team.isActive = false;
+      await team.save();
+
+      await Conversation.findOneAndUpdate(
+        {
+          type: 'team',
+          $or: [
+            { teamId: team.slug },
+            { conversationId: team.slug },
+          ],
+        },
+        {
+          $set: {
+            participants: [],
+            title: team.name,
+            isArchived: true,
+          },
+        }
+      );
+
+      return res.json({ success: true, archived: true });
+    }
+
+    team.members = remainingMembers;
+    await team.save();
+    await ensureTeamConversation(team);
+
+    return res.json({ success: true, archived: false });
+  } catch (error) {
+    console.error('❌ Leave team error:', error);
+    res.status(500).json({ error: 'Failed to leave group' });
   }
 };
 
