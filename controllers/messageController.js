@@ -251,7 +251,7 @@ const findTeamByConversationId = async (conversationId) => {
   return cloneTeamRecordWithMembers(team, await resolveTeamMembers(team));
 };
 
-const getTeamByConversationId = async (conversationId) => {
+const getTeamDocumentByConversationId = async (conversationId) => {
   if (!conversationId) return null;
 
   const directMatch = await Team.findOne({
@@ -260,7 +260,7 @@ const getTeamByConversationId = async (conversationId) => {
   });
 
   if (directMatch) {
-    return cloneTeamRecordWithMembers(directMatch, await resolveTeamMembers(directMatch));
+    return directMatch;
   }
 
   const conversation = await Conversation.findOne({
@@ -279,6 +279,16 @@ const getTeamByConversationId = async (conversationId) => {
     slug: conversation.teamId || conversation.conversationId,
     isActive: true,
   });
+
+  if (!team) {
+    return null;
+  }
+
+  return team;
+};
+
+const getTeamByConversationId = async (conversationId) => {
+  const team = await getTeamDocumentByConversationId(conversationId);
 
   if (!team) {
     return null;
@@ -760,7 +770,7 @@ exports.getTeamDetails = async (req, res) => {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    const team = await getTeamByConversationId(conversationId);
+    const team = await getTeamDocumentByConversationId(conversationId);
 
     if (!team) {
       return res.status(404).json({ error: 'Team not found' });
@@ -791,7 +801,7 @@ exports.updateTeamDetails = async (req, res) => {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    const team = await getTeamByConversationId(conversationId);
+    const team = await getTeamDocumentByConversationId(conversationId);
 
     if (!team) {
       return res.status(404).json({ error: 'Team not found' });
@@ -843,7 +853,7 @@ exports.leaveTeamConversation = async (req, res) => {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    const team = await getTeamByConversationId(conversationId);
+    const team = await getTeamDocumentByConversationId(conversationId);
 
     if (!team) {
       return res.status(404).json({ error: 'Team not found' });
