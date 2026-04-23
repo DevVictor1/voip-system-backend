@@ -213,6 +213,10 @@ const ensureTeamRecord = async ({ teamId, teamName, participants }) => {
 
   let team = await Team.findOne({ slug: resolvedTeamId });
 
+  if (team && team.isActive === false) {
+    return null;
+  }
+
   if (!team) {
     const configTeam = findConfigTeamById(resolvedTeamId);
     const nextMembers = getSortedParticipants(participants || configTeam?.members || []);
@@ -328,6 +332,7 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     isSystemManaged: !manageable,
     canManage: manageable,
     canLeave: manageable && members.includes(currentUserId),
+    canDelete: manageable && (role === 'admin' || team.createdBy === currentUserId),
     managementNote: manageable
       ? ''
       : 'This team is managed by workspace defaults and can only be viewed here.',
@@ -757,6 +762,64 @@ exports.createTeamConversation = async (req, res) => {
   } catch (error) {
     console.error('❌ Create team conversation error:', error);
     res.status(500).json({ error: 'Failed to create group chat' });
+  }
+};
+
+exports.deleteTeamConversation = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId || req.query?.userId);
+    const role = resolveRole(req.body?.role || req.query?.role);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    if (isSystemManagedTeam(team)) {
+      return res.status(400).json({ error: 'This team is managed by workspace defaults' });
+    }
+
+    const canDelete = role === 'admin' || team.createdBy === userId;
+
+    if (!canDelete) {
+      return res.status(403).json({ error: 'Only the group creator or an admin can delete this group' });
+    }
+
+    team.members = [];
+    team.isActive = false;
+    await team.save();
+
+    await Conversation.updateMany(
+      {
+        type: 'team',
+        $or: [
+          { teamId: team.slug },
+          { conversationId: team.slug },
+        ],
+      },
+      {
+        $set: {
+          participants: [],
+          title: team.name,
+          isArchived: true,
+        },
+      }
+    );
+
+    return res.json({
+      success: true,
+      conversationId: team.slug,
+      teamId: team.slug,
+    });
+  } catch (error) {
+    console.error('❌ Delete team error:', error);
+    res.status(500).json({ error: 'Failed to delete group' });
   }
 };
 

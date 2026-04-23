@@ -8,6 +8,7 @@ const {
   getTeamDetails,
   updateTeamDetails,
   leaveTeamConversation,
+  deleteTeamConversation,
   getConversations,
   getThread,
   sendMessage,
@@ -23,6 +24,7 @@ router.post('/team', createTeamConversation);
 router.get('/team/:conversationId/details', getTeamDetails);
 router.put('/team/:conversationId/details', updateTeamDetails);
 router.post('/team/:conversationId/leave', leaveTeamConversation);
+router.delete('/team/:conversationId', deleteTeamConversation);
 router.get('/conversations', getConversations);
 router.get('/thread/:conversationId', getThread);
 router.post('/send', sendMessage);
