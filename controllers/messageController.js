@@ -535,6 +535,26 @@ const buildMessageDirection = (message, userId) => {
   return message.senderId === userId ? 'outbound' : 'inbound';
 };
 
+const emitInternalMessageStatus = ({
+  conversationId,
+  conversationType,
+  messageIds = [],
+  status,
+  userId = '',
+}) => {
+  if (!global.io || !conversationId || !conversationType || !status || messageIds.length === 0) {
+    return;
+  }
+
+  global.io.emit('internalMessageStatus', {
+    conversationId,
+    conversationType,
+    messageIds: messageIds.map((id) => String(id)),
+    status,
+    userId: userId || '',
+  });
+};
+
 const getSortedParticipants = (participants = []) => {
   return [...new Set((participants || []).filter(Boolean))].sort();
 };
@@ -1330,6 +1350,17 @@ exports.sendMessage = async (req, res) => {
 
     const saved = await Message.create(payload);
 
+    const connectedUsers = global.connectedUsers || {};
+    const deliveryRecipients = conversationType === 'internal_dm'
+      ? [payload.to].filter(Boolean)
+      : (payload.participants || []).filter((participantId) => participantId && participantId !== userId);
+    const hasConnectedRecipient = deliveryRecipients.some((participantId) => Boolean(connectedUsers[participantId]));
+
+    if (hasConnectedRecipient && ['queued', 'sent'].includes(saved.status)) {
+      saved.status = 'delivered';
+      await saved.save();
+    }
+
     if (conversationType === 'internal_dm' || conversationType === 'team') {
       await Conversation.findOneAndUpdate(
         { conversationId: saved.conversationId, type: conversationType },
@@ -1366,17 +1397,67 @@ exports.markConversationRead = async (req, res) => {
       return res.status(400).json({ error: 'Missing conversation id' });
     }
 
-    await Message.updateMany(
+    const targetMessages = await Message.find(
       {
         conversationId,
         conversationType: { $in: INTERNAL_TYPES },
         senderId: { $ne: userId },
         readBy: { $ne: userId },
-      },
+      }
+    ).select('_id conversationType status');
+
+    if (targetMessages.length === 0) {
+      return res.json({ success: true });
+    }
+
+    const conversationType = targetMessages[0]?.conversationType || 'internal_dm';
+    const targetIds = targetMessages.map((message) => message._id);
+
+    await Message.updateMany(
+      { _id: { $in: targetIds } },
       {
         $addToSet: { readBy: userId },
+        $set: { read: true },
       }
     );
+
+    if (conversationType === 'internal_dm') {
+      await Message.updateMany(
+        { _id: { $in: targetIds } },
+        {
+          $set: { status: 'read' },
+        }
+      );
+
+      emitInternalMessageStatus({
+        conversationId,
+        conversationType,
+        messageIds: targetIds,
+        status: 'read',
+        userId,
+      });
+    } else {
+      const deliveredIds = targetMessages
+        .filter((message) => ['queued', 'sent'].includes(message.status))
+        .map((message) => message._id);
+
+      if (deliveredIds.length > 0) {
+        await Message.updateMany(
+          { _id: { $in: deliveredIds } },
+          {
+            $set: { status: 'delivered' },
+          }
+        );
+
+        emitInternalMessageStatus({
+          conversationId,
+          conversationType,
+          messageIds: deliveredIds,
+          status: 'delivered',
+          userId,
+        });
+      }
+    }
 
     res.json({ success: true });
   } catch (error) {
