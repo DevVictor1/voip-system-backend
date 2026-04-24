@@ -78,6 +78,29 @@ const findContactByPhone = async (phone) => {
 
 const normalizeAssignedNumber = (value) => normalize(value || '');
 
+const stripPhoneFormatting = (value) => String(value || '').replace(/[^\d+]/g, '').trim();
+
+const doPhoneNumbersMatch = (left, right) => {
+  const leftNormalized = normalizeAssignedNumber(left);
+  const rightNormalized = normalizeAssignedNumber(right);
+
+  if (leftNormalized && rightNormalized && leftNormalized === rightNormalized) {
+    return true;
+  }
+
+  const leftE164 = formatToE164(left);
+  const rightE164 = formatToE164(right);
+
+  if (leftE164 && rightE164 && leftE164 === rightE164) {
+    return true;
+  }
+
+  const leftStripped = stripPhoneFormatting(left);
+  const rightStripped = stripPhoneFormatting(right);
+
+  return Boolean(leftStripped && rightStripped && leftStripped === rightStripped);
+};
+
 const findTextingGroupBySlug = async (groupId) => {
   if (!groupId) return null;
 
@@ -91,10 +114,12 @@ const findTextingGroupByAssignedNumber = async (phoneNumber) => {
   const normalized = normalizeAssignedNumber(phoneNumber);
   if (!normalized) return null;
 
-  return TextingGroup.findOne({
-    assignedNumber: normalized,
+  const activeGroups = await TextingGroup.find({
     isActive: true,
+    assignedNumber: { $type: 'string', $ne: '' },
   });
+
+  return activeGroups.find((group) => doPhoneNumbersMatch(group.assignedNumber, phoneNumber)) || null;
 };
 
 const getTextingGroupAccessQuery = (userId, role) => {

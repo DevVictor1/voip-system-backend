@@ -8,7 +8,7 @@ const TextingGroup = require('../models/TextingGroup');
 const DEFAULT_GROUP = {
   name: 'Text Support Group',
   slug: 'text_support_group',
-  assignedNumber: '+17702848888',
+  assignedNumber: '+12605440829', // Replace with a valid Twilio number in your account
   isActive: true,
 };
 
