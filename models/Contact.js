@@ -17,6 +17,10 @@ const contactSchema = new mongoose.Schema(
 
   dba: String,
   mid: String,
+  notes: {
+    type: String,
+    default: '',
+  },
   textingGroupId: {
     type: String,
     default: null,

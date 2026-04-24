@@ -14,10 +14,46 @@ const normalizeAssignmentStatus = (value) => {
   return CONTACT_ASSIGNMENT_STATUSES.includes(normalized) ? normalized : '';
 };
 
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // ðŸ”¥ NORMALIZE PHONE
 const normalizePhone = (phone) => {
   if (!phone) return '';
   return phone.toString().replace(/\D/g, '');
+};
+
+const normalizePhoneKey = (phone) => normalizePhone(phone).slice(-10);
+
+const splitContactName = (value) => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return { firstName: '', lastName: '' };
+  }
+
+  const parts = trimmed.split(/\s+/);
+  return {
+    firstName: parts.shift() || '',
+    lastName: parts.join(' '),
+  };
+};
+
+const findExistingContactByPhone = async (phone) => {
+  const normalizedPhone = normalizePhone(phone);
+  const phoneKey = normalizePhoneKey(phone);
+
+  if (!normalizedPhone && !phoneKey) {
+    return null;
+  }
+
+  const phoneMatchers = [normalizedPhone, phoneKey]
+    .filter(Boolean)
+    .flatMap((value) => ([{ 'phones.number': value }]));
+
+  if (phoneKey) {
+    phoneMatchers.push({ 'phones.number': { $regex: `${escapeRegex(phoneKey)}$` } });
+  }
+
+  return Contact.findOne({ $or: phoneMatchers });
 };
 
 // ðŸ”¥ AUTO DETECT DBA
@@ -221,6 +257,81 @@ exports.assignContact = async (req, res) => {
   } catch (err) {
     console.error('âŒ Assign error:', err);
     res.status(500).json({ error: 'Failed to assign contact' });
+  }
+};
+
+exports.upsertContact = async (req, res) => {
+  try {
+    const {
+      name = '',
+      phone = '',
+      business = '',
+      merchantId = '',
+      notes = '',
+    } = req.body || {};
+
+    const normalizedPhone = normalizePhone(phone);
+    const phoneKey = normalizePhoneKey(phone);
+
+    if (!normalizedPhone || !phoneKey) {
+      return res.status(400).json({ error: 'Valid phone number is required' });
+    }
+
+    const { firstName, lastName } = splitContactName(name);
+    const trimmedBusiness = String(business || '').trim();
+    const trimmedMerchantId = String(merchantId || '').trim();
+    const trimmedNotes = String(notes || '').trim();
+
+    const existingContact = await findExistingContactByPhone(normalizedPhone);
+    const normalizedPhones = (existingContact?.phones || []).map((entry) => ({
+      ...entry,
+      number: normalizePhone(entry.number),
+    }));
+
+    const hasMatchingPhone = normalizedPhones.some((entry) => normalizePhoneKey(entry.number) === phoneKey);
+    const nextPhones = hasMatchingPhone
+      ? normalizedPhones
+      : [
+          ...normalizedPhones,
+          {
+            label: normalizedPhones.length > 0 ? 'mobile' : 'primary',
+            number: normalizedPhone,
+          },
+        ];
+
+    if (existingContact) {
+      existingContact.firstName = firstName || existingContact.firstName || '';
+      existingContact.lastName = lastName || existingContact.lastName || '';
+      existingContact.dba = trimmedBusiness || existingContact.dba || '';
+      existingContact.mid = trimmedMerchantId || existingContact.mid || '';
+      existingContact.notes = trimmedNotes || existingContact.notes || '';
+      existingContact.phones = nextPhones;
+
+      const updated = await existingContact.save();
+      return res.json({ contact: updated, created: false });
+    }
+
+    const created = await Contact.create({
+      firstName,
+      lastName,
+      dba: trimmedBusiness,
+      mid: trimmedMerchantId,
+      notes: trimmedNotes,
+      phones: [
+        {
+          label: 'primary',
+          number: normalizedPhone,
+        },
+      ],
+      assignedTo: null,
+      isUnassigned: true,
+      assignmentStatus: 'open',
+    });
+
+    return res.status(201).json({ contact: created, created: true });
+  } catch (error) {
+    console.error('Upsert contact error:', error);
+    return res.status(500).json({ error: 'Failed to save contact' });
   }
 };
 
