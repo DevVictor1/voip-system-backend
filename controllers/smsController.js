@@ -15,6 +15,14 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
+const SMS_SEND_DEBUG_ENABLED = String(process.env.SMS_SEND_DEBUG || 'true').trim().toLowerCase() !== 'false';
+
+const logSmsSendDebug = (stage, payload = {}) => {
+  if (!SMS_SEND_DEBUG_ENABLED) return;
+
+  console.log('[TEMP sms:send-debug]', stage, payload);
+};
+
 const formatToE164 = (input) => {
   try {
     if (!input) return null;
@@ -389,7 +397,7 @@ exports.receiveSMS = async (req, res) => {
 
 exports.sendSMS = async (req, res) => {
   try {
-    const { to, body, message, mediaUrl, textingGroupId, userId, senderName } = req.body;
+    const { to, body, message, mediaUrl, textingGroupId, userId, senderName, role } = req.body;
     const text = body || message;
 
     if (!to || (!text && !mediaUrl)) {
@@ -398,8 +406,31 @@ exports.sendSMS = async (req, res) => {
 
     const normalizedTo = normalize(to);
     const formattedTo = formatToE164(to);
+    const requestContext = textingGroupId ? 'texting-group' : 'direct';
+
+    logSmsSendDebug('request-received', {
+      context: requestContext,
+      originalTo: to,
+      normalizedTo,
+      formattedTo,
+      originalFrom: process.env.TWILIO_PHONE_NUMBER || '',
+      textingGroupId: textingGroupId || null,
+      hasTextingGroupContext: Boolean(textingGroupId),
+      senderName: senderName || null,
+      userId: userId || null,
+      role: role || null,
+      hasMedia: Boolean(mediaUrl),
+      bodyLength: String(text || '').length,
+      bodyPreview: String(text || '').slice(0, 80),
+    });
 
     if (!formattedTo) {
+      logSmsSendDebug('request-rejected-invalid-number', {
+        context: requestContext,
+        originalTo: to,
+        normalizedTo,
+        formattedTo,
+      });
       return res.status(400).json({ error: 'Invalid phone number' });
     }
 
@@ -431,12 +462,35 @@ exports.sendSMS = async (req, res) => {
       mediaUrl: mediaList,
     };
 
+    logSmsSendDebug('twilio-payload', {
+      context: requestContext,
+      originalTo: to,
+      normalizedTo,
+      formattedTo,
+      from: payload.from,
+      textingGroupId: textingGroup?.slug || null,
+      textingGroupName: textingGroup?.name || null,
+      mediaCount: mediaList?.length || 0,
+    });
+
     const baseUrl = ensureAbsoluteHttpsUrl(process.env.BASE_URL);
     if (baseUrl) {
       payload.statusCallback = `${baseUrl}/api/sms/status`;
     }
 
     const twilioRes = await client.messages.create(payload);
+
+    logSmsSendDebug('twilio-response', {
+      context: requestContext,
+      originalTo: to,
+      normalizedTo,
+      formattedTo,
+      from: payload.from,
+      sid: twilioRes.sid,
+      status: twilioRes.status || null,
+      errorCode: twilioRes.errorCode || null,
+      errorMessage: twilioRes.errorMessage || null,
+    });
 
     const contact = await findOrCreateContactByPhone(normalizedTo);
     if (contact && textingGroup) {
@@ -468,8 +522,28 @@ exports.sendSMS = async (req, res) => {
       global.io.emit('newMessage', saved);
     }
 
+    logSmsSendDebug('message-saved', {
+      context: requestContext,
+      sid: saved.sid || null,
+      conversationId: saved.conversationId,
+      textingGroupId: saved.textingGroupId || null,
+      textingGroupName: saved.textingGroupName || null,
+      storedTo: saved.to,
+      storedToFull: saved.toFull,
+      storedFrom: saved.from,
+      storedFromFull: saved.fromFull,
+      storedStatus: saved.status,
+    });
+
     res.json(saved);
   } catch (error) {
+    logSmsSendDebug('send-error', {
+      originalTo: req.body?.to || null,
+      textingGroupId: req.body?.textingGroupId || null,
+      errorMessage: error?.message || String(error),
+      errorCode: error?.code || null,
+      twilioCode: error?.status || error?.errorCode || null,
+    });
     console.error('SEND ERROR:', error);
     res.status(500).json({ error: 'Send failed' });
   }
