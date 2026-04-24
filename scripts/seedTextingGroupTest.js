@@ -18,6 +18,18 @@ const readArgValue = (flag) => {
   return String(process.argv[index + 1] || '').trim();
 };
 
+const parseMembersArg = () => {
+  const rawMembers = readArgValue('--members');
+  if (!rawMembers) return [];
+
+  return [...new Set(
+    rawMembers
+      .split(',')
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+};
+
 const resolveTargetUser = async () => {
   const agentId = readArgValue('--agentId');
   const email = readArgValue('--email').toLowerCase();
@@ -49,24 +61,30 @@ async function run() {
       return;
     }
 
-    const user = await resolveTargetUser();
+    const membersFromArg = parseMembersArg();
+    const user = membersFromArg.length === 0
+      ? await resolveTargetUser()
+      : null;
 
-    if (!user) {
-      throw new Error('No matching user found. Pass --agentId <agentId> or --email <email>.');
+    if (membersFromArg.length === 0 && !user) {
+      throw new Error('No matching user found. Pass --members <agentId1,agentId2> or use --agentId <agentId> / --email <email>.');
     }
 
-    if (!user.agentId) {
+    if (user && !user.agentId) {
       throw new Error(`User "${user.email}" does not have an agentId. TextingGroup.members must use agentId strings.`);
     }
 
-    const nextMembers = [...new Set([user.agentId])];
+    const nextMembers = membersFromArg.length > 0
+      ? membersFromArg
+      : [...new Set([user.agentId])];
+    const createdBy = nextMembers[0];
 
     const textingGroup = await TextingGroup.findOneAndUpdate(
       { slug: DEFAULT_GROUP.slug },
       {
         $set: {
           ...DEFAULT_GROUP,
-          createdBy: user.agentId,
+          createdBy,
           members: nextMembers,
         },
       },
@@ -86,11 +104,12 @@ async function run() {
       members: textingGroup.members,
       createdBy: textingGroup.createdBy,
       isActive: textingGroup.isActive,
-      targetUser: {
+      targetUser: user ? {
         name: user.name,
         email: user.email,
         agentId: user.agentId,
-      },
+      } : null,
+      note: 'Temporary test helper only. Safe to delete after texting-group unread testing.',
     }, null, 2));
   } finally {
     await mongoose.disconnect();
