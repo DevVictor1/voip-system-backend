@@ -427,7 +427,9 @@ const syncConversationSummary = async (conversationId, type, conversationRecord 
     return null;
   }
 
-  const nextPreview = latestMessage?.body || '';
+  const nextPreview = latestMessage
+    ? (latestMessage.isDeleted ? 'This message was deleted' : (latestMessage.body || ''))
+    : '';
   const nextTimestamp = latestMessage?.createdAt || null;
   const currentPreview = conversation.lastMessagePreview || '';
   const currentTimestamp = conversation.lastMessageAt
@@ -444,6 +446,58 @@ const syncConversationSummary = async (conversationId, type, conversationRecord 
   }
 
   return conversation;
+};
+
+const buildFormattedInternalMessage = (message, userId) => ({
+  ...message.toObject(),
+  direction: buildMessageDirection(message, userId),
+});
+
+const emitInternalMessageMutation = (eventName, message) => {
+  if (!global.io || !eventName || !message) {
+    return;
+  }
+
+  global.io.emit(eventName, message);
+};
+
+const resolveInternalMessageAccess = async ({
+  messageId,
+  rawUserId,
+  rawRole,
+  allowAdminDelete = false,
+}) => {
+  const userId = await normalizeUserId(rawUserId);
+  const role = resolveRole(rawRole);
+
+  if (!userId) {
+    return { error: { status: 400, body: { error: 'Invalid userId' } } };
+  }
+
+  const message = await Message.findById(messageId);
+  if (!message || !INTERNAL_TYPES.includes(message.conversationType)) {
+    return { error: { status: 404, body: { error: 'Message not found' } } };
+  }
+
+  const visible = isConversationVisible({
+    conversationType: message.conversationType,
+    participants: message.participants || [],
+  }, userId, role);
+
+  if (!visible) {
+    return { error: { status: 403, body: { error: 'Not allowed' } } };
+  }
+
+  const isSender = message.senderId === userId;
+  const canDeleteAsAdmin = allowAdminDelete && role === 'admin';
+
+  return {
+    userId,
+    role,
+    message,
+    isSender,
+    canDeleteAsAdmin,
+  };
 };
 
 const buildInternalConversationMap = async (userId, role) => {
@@ -1463,5 +1517,100 @@ exports.markConversationRead = async (req, res) => {
   } catch (error) {
     console.error('❌ Internal read error:', error);
     res.status(500).json({ error: 'Failed to mark read' });
+  }
+};
+
+exports.editMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.body?.userId,
+      rawRole: req.body?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, isSender, userId } = access;
+    const nextBody = String(req.body?.body || '').trim();
+
+    if (!isSender) {
+      return res.status(403).json({ error: 'Only the sender can edit this message' });
+    }
+
+    if (!nextBody) {
+      return res.status(400).json({ error: 'Message body is required' });
+    }
+
+    if (message.isDeleted) {
+      return res.status(400).json({ error: 'Deleted messages cannot be edited' });
+    }
+
+    if (message.body === nextBody) {
+      return res.json(buildFormattedInternalMessage(message, userId));
+    }
+
+    if (!message.originalText) {
+      message.originalText = message.body || '';
+    }
+
+    message.body = nextBody;
+    message.editedAt = new Date();
+    await message.save();
+
+    await syncConversationSummary(message.conversationId, message.conversationType);
+
+    const formatted = buildFormattedInternalMessage(message, userId);
+    emitInternalMessageMutation('internalMessageUpdated', formatted);
+
+    return res.json(formatted);
+  } catch (error) {
+    console.error('❌ Internal edit message error:', error);
+    return res.status(500).json({ error: 'Failed to edit message' });
+  }
+};
+
+exports.softDeleteMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.body?.userId || req.query?.userId,
+      rawRole: req.body?.role || req.query?.role,
+      allowAdminDelete: true,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, isSender, canDeleteAsAdmin, userId } = access;
+
+    if (!isSender && !canDeleteAsAdmin) {
+      return res.status(403).json({ error: 'Only the sender can delete this message' });
+    }
+
+    if (!message.isDeleted) {
+      if (!message.originalText) {
+        message.originalText = message.body || '';
+      }
+
+      message.isDeleted = true;
+      message.deletedAt = new Date();
+      message.body = '';
+      await message.save();
+    }
+
+    await syncConversationSummary(message.conversationId, message.conversationType);
+
+    const formatted = buildFormattedInternalMessage(message, userId);
+    emitInternalMessageMutation('internalMessageDeleted', formatted);
+
+    return res.json(formatted);
+  } catch (error) {
+    console.error('❌ Internal delete message error:', error);
+    return res.status(500).json({ error: 'Failed to delete message' });
   }
 };

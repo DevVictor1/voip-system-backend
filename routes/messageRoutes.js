@@ -10,10 +10,12 @@ const {
   leaveTeamConversation,
   deleteTeamConversation,
   getConversations,
-  getThread,
-  sendMessage,
-  markConversationRead,
-} = require('../controllers/messageController');
+   getThread,
+   sendMessage,
+   markConversationRead,
+   editMessage,
+   softDeleteMessage,
+ } = require('../controllers/messageController');
 
 const router = express.Router();
 
@@ -29,5 +31,7 @@ router.get('/conversations', getConversations);
 router.get('/thread/:conversationId', getThread);
 router.post('/send', sendMessage);
 router.put('/read/:conversationId', markConversationRead);
+router.put('/message/:messageId', editMessage);
+router.delete('/message/:messageId', softDeleteMessage);
 
 module.exports = router;

@@ -57,6 +57,22 @@ const messageSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+    originalText: {
+      type: String,
+      default: null,
+    },
 
     read: {
       type: Boolean,
