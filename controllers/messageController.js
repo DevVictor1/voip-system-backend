@@ -1599,6 +1599,9 @@ exports.softDeleteMessage = async (req, res) => {
 
       message.isDeleted = true;
       message.deletedAt = new Date();
+      message.isPinned = false;
+      message.pinnedAt = null;
+      message.pinnedBy = null;
       message.body = '';
       await message.save();
     }
