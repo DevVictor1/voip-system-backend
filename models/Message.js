@@ -73,6 +73,18 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    isPinned: {
+      type: Boolean,
+      default: false,
+    },
+    pinnedAt: {
+      type: Date,
+      default: null,
+    },
+    pinnedBy: {
+      type: String,
+      default: null,
+    },
 
     read: {
       type: Boolean,

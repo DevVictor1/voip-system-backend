@@ -1614,3 +1614,41 @@ exports.softDeleteMessage = async (req, res) => {
     return res.status(500).json({ error: 'Failed to delete message' });
   }
 };
+
+exports.togglePinMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.body?.userId,
+      rawRole: req.body?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, userId } = access;
+    const shouldPin = Boolean(req.body?.pinned);
+
+    if (shouldPin) {
+      message.isPinned = true;
+      message.pinnedAt = new Date();
+      message.pinnedBy = userId;
+    } else {
+      message.isPinned = false;
+      message.pinnedAt = null;
+      message.pinnedBy = null;
+    }
+
+    await message.save();
+
+    const formatted = buildFormattedInternalMessage(message, userId);
+    emitInternalMessageMutation('internalMessageUpdated', formatted);
+
+    return res.json(formatted);
+  } catch (error) {
+    console.error('âŒ Internal pin message error:', error);
+    return res.status(500).json({ error: 'Failed to update pinned message' });
+  }
+};
