@@ -582,14 +582,27 @@ exports.resetUserPassword = async (req, res) => {
 exports.deleteUser = async (req, res) => {
   try {
     if (String(req.user?._id) === String(req.params.id)) {
-      return res.status(400).json({ error: 'You cannot delete your own account' });
+      return res.status(400).json({ error: 'You cannot delete your own account.' });
     }
 
-    const user = await User.findByIdAndDelete(req.params.id);
+    const user = await User.findById(req.params.id);
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    if (user.role === 'admin' && user.isActive !== false) {
+      const activeAdminCount = await User.countDocuments({
+        role: 'admin',
+        isActive: true,
+      });
+
+      if (activeAdminCount <= 1) {
+        return res.status(400).json({ error: 'At least one admin account must remain.' });
+      }
+    }
+
+    await User.findByIdAndDelete(req.params.id);
 
     return res.json({
       success: true,
