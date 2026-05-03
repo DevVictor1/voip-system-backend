@@ -286,6 +286,7 @@ exports.listAgentStatus = async (_req, res) => {
   try {
     const users = await User.find({
       agentId: { $type: 'string', $ne: '' },
+      isActive: true,
     })
       .select('name role agentId department isActive status maxConcurrentCalls isAssignable')
       .sort({ name: 1, createdAt: 1 });
@@ -600,6 +601,27 @@ exports.deleteUser = async (req, res) => {
       if (activeAdminCount <= 1) {
         return res.status(400).json({ error: 'At least one admin account must remain.' });
       }
+    }
+
+    const agentId = user.agentId ? String(user.agentId).trim() : '';
+    const socketId = agentId ? global.connectedUsers?.[agentId] : '';
+
+    if (agentId) {
+      if (global.connectedUsers) {
+        delete global.connectedUsers[agentId];
+      }
+
+      if (global.agentStatus) {
+        delete global.agentStatus[agentId];
+      }
+
+      if (global.agentVoiceReady) {
+        delete global.agentVoiceReady[agentId];
+      }
+    }
+
+    if (socketId && global.io?.sockets?.sockets?.get(socketId)) {
+      global.io.sockets.sockets.get(socketId).disconnect(true);
     }
 
     await User.findByIdAndDelete(req.params.id);
