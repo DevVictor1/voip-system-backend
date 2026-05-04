@@ -1325,6 +1325,7 @@ exports.sendMessage = async (req, res) => {
       conversationId,
       userId: rawUserId,
       body,
+      forwardedFromMessageId,
     } = req.body || {};
 
     const userId = await normalizeUserId(rawUserId);
@@ -1370,6 +1371,7 @@ exports.sendMessage = async (req, res) => {
         status: 'sent',
         read: true,
         readBy: [userId],
+        forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
       };
     } else {
       const team = await ensureTeamRecord({
@@ -1400,6 +1402,7 @@ exports.sendMessage = async (req, res) => {
         status: 'sent',
         read: true,
         readBy: [userId],
+        forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
       };
     }
 

@@ -111,6 +111,10 @@ const messageSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    forwardedFromMessageId: {
+      type: String,
+      default: null,
+    },
 
     read: {
       type: Boolean,
