@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const USER_ROLES = ['admin', 'agent'];
 const USER_DEPARTMENTS = ['tech', 'support', 'sales'];
 const USER_ASSIGNMENT_STATUSES = ['available', 'busy', 'offline'];
+const USER_AVAILABILITY_STATUSES = ['online', 'busy', 'meeting', 'break', 'offline'];
 const SALT_ROUNDS = 10;
 
 const userSchema = new mongoose.Schema(
@@ -49,6 +50,12 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: USER_ASSIGNMENT_STATUSES,
       default: 'offline',
+      trim: true,
+    },
+    availabilityStatus: {
+      type: String,
+      enum: USER_AVAILABILITY_STATUSES,
+      default: 'online',
       trim: true,
     },
     maxActiveChats: {
@@ -104,6 +111,7 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       department: this.department,
       isActive: this.isActive,
       status: this.status || 'offline',
+      availabilityStatus: this.availabilityStatus || 'online',
       maxActiveChats: Number.isFinite(this.maxActiveChats) ? this.maxActiveChats : 5,
       currentActiveChats: Number.isFinite(this.currentActiveChats) ? this.currentActiveChats : 0,
       maxConcurrentCalls: Number.isFinite(this.maxConcurrentCalls) ? this.maxConcurrentCalls : 1,

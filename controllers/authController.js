@@ -128,6 +128,35 @@ const normalizeStatus = (status) => {
   return 'offline';
 };
 
+const normalizeAvailabilityStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (['online', 'busy', 'meeting', 'break', 'offline'].includes(normalized)) {
+    return normalized;
+  }
+
+  return 'online';
+};
+
+const resolveConnectedState = (agentId) => {
+  if (!agentId) return false;
+  return Boolean(global.connectedUsers?.[agentId]);
+};
+
+const resolvePresenceStatus = (agentId) => {
+  if (!agentId) return 'offline';
+  if (!resolveConnectedState(agentId)) return 'offline';
+  return global.agentStatus?.[agentId] || 'online';
+};
+
+const resolveEffectiveAvailabilityStatus = (user) => {
+  const agentId = user?.agentId || '';
+  if (!resolveConnectedState(agentId)) {
+    return 'offline';
+  }
+
+  return normalizeAvailabilityStatus(user?.availabilityStatus || 'online');
+};
+
 const normalizeNonNegativeInteger = (value, fallback) => {
   if (value === undefined || value === null || value === '') {
     return fallback;
@@ -191,6 +220,7 @@ const buildUserPayload = ({
   department,
   isActive,
   status,
+  availabilityStatus,
   maxActiveChats,
   currentActiveChats,
   maxConcurrentCalls,
@@ -208,6 +238,7 @@ const buildUserPayload = ({
     department: normalizedDepartment,
     isActive: isActive === false ? false : true,
     status: normalizeStatus(status),
+    availabilityStatus: normalizeAvailabilityStatus(availabilityStatus),
     maxActiveChats: normalizeNonNegativeInteger(maxActiveChats, 5),
     currentActiveChats: normalizeNonNegativeInteger(currentActiveChats, 0),
     maxConcurrentCalls: normalizeNonNegativeInteger(maxConcurrentCalls, 1),
@@ -270,11 +301,17 @@ exports.listTeammates = async (req, res) => {
       agentId: { $type: 'string', $ne: '' },
       _id: { $ne: currentUserId },
     })
-      .select('name role agentId department isActive status maxActiveChats currentActiveChats maxConcurrentCalls isAssignable')
+      .select('name role agentId department isActive status availabilityStatus maxActiveChats currentActiveChats maxConcurrentCalls isAssignable')
       .sort({ name: 1 });
 
     return res.json({
-      teammates: teammates.map(sanitizeTeammate),
+      teammates: teammates.map((user) => ({
+        ...sanitizeTeammate(user),
+        availabilityStatus: normalizeAvailabilityStatus(user.availabilityStatus || 'online'),
+        connected: resolveConnectedState(user.agentId || ''),
+        presenceStatus: resolvePresenceStatus(user.agentId || ''),
+        effectiveAvailabilityStatus: resolveEffectiveAvailabilityStatus(user),
+      })),
     });
   } catch (error) {
     console.error('Auth list teammates error:', error);
@@ -288,7 +325,7 @@ exports.listAgentStatus = async (_req, res) => {
       agentId: { $type: 'string', $ne: '' },
       isActive: true,
     })
-      .select('name role agentId department isActive status maxConcurrentCalls isAssignable')
+      .select('name role agentId department isActive status availabilityStatus maxConcurrentCalls isAssignable')
       .sort({ name: 1, createdAt: 1 });
 
     const activeCallCounts = await resolveActiveCallCounts(
@@ -297,9 +334,9 @@ exports.listAgentStatus = async (_req, res) => {
 
     const agentStatus = users.map((user) => {
       const agentId = user.agentId || '';
-      const connected = Boolean(global.connectedUsers?.[agentId]);
+      const connected = resolveConnectedState(agentId);
       const voiceReady = Boolean(global.agentVoiceReady?.[agentId]);
-      const presenceStatus = global.agentStatus?.[agentId] || 'offline';
+      const presenceStatus = resolvePresenceStatus(agentId);
 
       return {
         id: String(user._id),
@@ -310,6 +347,8 @@ exports.listAgentStatus = async (_req, res) => {
         isActive: user.isActive !== false,
         isAssignable: typeof user.isAssignable === 'boolean' ? user.isAssignable : true,
         status: user.status || 'offline',
+        availabilityStatus: normalizeAvailabilityStatus(user.availabilityStatus || 'online'),
+        effectiveAvailabilityStatus: resolveEffectiveAvailabilityStatus(user),
         connected,
         presenceStatus,
         voiceReady,
@@ -322,6 +361,35 @@ exports.listAgentStatus = async (_req, res) => {
   } catch (error) {
     console.error('Auth list agent status error:', error);
     return res.status(500).json({ error: 'Failed to fetch agent status' });
+  }
+};
+
+exports.updateMyAvailabilityStatus = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const availabilityStatus = normalizeAvailabilityStatus(req.body?.availabilityStatus);
+    req.user.availabilityStatus = availabilityStatus;
+    await req.user.save();
+
+    if (req.user.agentId && global.io) {
+      global.io.emit('agentAvailabilityStatus', {
+        userId: req.user.agentId,
+        availabilityStatus,
+      });
+    }
+
+    return res.json({
+      user: sanitizeUser(req.user),
+      effectiveAvailabilityStatus: resolveEffectiveAvailabilityStatus(req.user),
+      connected: resolveConnectedState(req.user.agentId || ''),
+      presenceStatus: resolvePresenceStatus(req.user.agentId || ''),
+    });
+  } catch (error) {
+    console.error('Auth update availability status error:', error);
+    return res.status(500).json({ error: 'Failed to update availability status' });
   }
 };
 
