@@ -16,7 +16,8 @@ const {
    editMessage,
    softDeleteMessage,
    togglePinMessage,
- } = require('../controllers/messageController');
+   toggleMessageReaction,
+  } = require('../controllers/messageController');
 
 const router = express.Router();
 
@@ -35,5 +36,6 @@ router.put('/read/:conversationId', markConversationRead);
 router.put('/message/:messageId', editMessage);
 router.delete('/message/:messageId', softDeleteMessage);
 router.put('/message/:messageId/pin', togglePinMessage);
+router.put('/message/:messageId/reaction', toggleMessageReaction);
 
 module.exports = router;

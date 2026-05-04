@@ -85,6 +85,32 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    reactions: {
+      type: [
+        new mongoose.Schema(
+          {
+            emoji: {
+              type: String,
+              default: '',
+            },
+            userId: {
+              type: String,
+              default: '',
+            },
+            userName: {
+              type: String,
+              default: '',
+            },
+            createdAt: {
+              type: Date,
+              default: Date.now,
+            },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
 
     read: {
       type: Boolean,

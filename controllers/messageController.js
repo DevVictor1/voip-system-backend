@@ -11,6 +11,7 @@ const {
 
 const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
+const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
@@ -1653,5 +1654,65 @@ exports.togglePinMessage = async (req, res) => {
   } catch (error) {
     console.error('âŒ Internal pin message error:', error);
     return res.status(500).json({ error: 'Failed to update pinned message' });
+  }
+};
+
+exports.toggleMessageReaction = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.body?.userId,
+      rawRole: req.body?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, userId } = access;
+    const emoji = String(req.body?.emoji || '').trim();
+
+    if (!ALLOWED_MESSAGE_REACTIONS.includes(emoji)) {
+      return res.status(400).json({ error: 'Unsupported reaction' });
+    }
+
+    if (message.isDeleted) {
+      return res.status(400).json({ error: 'Deleted messages cannot be reacted to' });
+    }
+
+    const userRecord = await User.findOne({
+      agentId: userId,
+      isActive: true,
+    }).select('name agentId');
+
+    const fallbackAgent = getAgentMeta(userId);
+    const reactionUserName = String(
+      userRecord?.name || fallbackAgent?.name || userRecord?.agentId || userId
+    ).trim();
+
+    const existingReactions = Array.isArray(message.reactions) ? message.reactions : [];
+    const nextReactions = existingReactions.filter((reaction) => reaction?.userId !== userId);
+    const existingReaction = existingReactions.find((reaction) => reaction?.userId === userId);
+
+    if (!existingReaction || existingReaction.emoji !== emoji) {
+      nextReactions.push({
+        emoji,
+        userId,
+        userName: reactionUserName,
+        createdAt: new Date(),
+      });
+    }
+
+    message.reactions = nextReactions;
+    await message.save();
+
+    const formatted = buildFormattedInternalMessage(message, userId);
+    emitInternalMessageMutation('internalMessageUpdated', formatted);
+
+    return res.json(formatted);
+  } catch (error) {
+    console.error('❌ Internal reaction update error:', error);
+    return res.status(500).json({ error: 'Failed to update reaction' });
   }
 };
