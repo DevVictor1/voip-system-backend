@@ -11,6 +11,7 @@ const {
 
 const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
+const TEAM_MENTION_PATTERN = /(^|\s)@([A-Za-z0-9._-]+)/g;
 const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 const normalizeUserIdValue = (userId) => {
@@ -462,6 +463,90 @@ const emitInternalMessageMutation = (eventName, message) => {
   global.io.emit(eventName, message);
 };
 
+const emitSocketEventToUser = (userId, eventName, payload) => {
+  if (!global.io || !userId || !eventName) {
+    return;
+  }
+
+  const socketIds = global.connectedUserSockets?.[userId];
+
+  if (socketIds && socketIds.size > 0) {
+    socketIds.forEach((socketId) => {
+      global.io.to(socketId).emit(eventName, payload);
+    });
+    return;
+  }
+
+  const socketId = global.connectedUsers?.[userId];
+  if (socketId) {
+    global.io.to(socketId).emit(eventName, payload);
+  }
+};
+
+const extractMentionHandles = (value = '') => {
+  const safeValue = String(value || '');
+  const handles = [];
+  let match;
+
+  while ((match = TEAM_MENTION_PATTERN.exec(safeValue)) !== null) {
+    const handle = String(match[2] || '').trim().toLowerCase();
+    if (handle) {
+      handles.push(handle);
+    }
+  }
+
+  TEAM_MENTION_PATTERN.lastIndex = 0;
+  return [...new Set(handles)];
+};
+
+const resolveTeamMentionMetadata = async (body, participantIds = []) => {
+  const handles = extractMentionHandles(body);
+  const participantSet = new Set(
+    (participantIds || [])
+      .map((participantId) => String(participantId || '').trim())
+      .filter(Boolean)
+  );
+
+  if (handles.length === 0 || participantSet.size === 0) {
+    return {
+      mentionedUserIds: [],
+      mentionedUsernames: [],
+    };
+  }
+
+  const matchedUsers = await User.find({
+    isActive: true,
+    agentId: { $in: Array.from(participantSet) },
+  }).select('agentId');
+
+  const lookup = matchedUsers.reduce((acc, user) => {
+    const agentId = String(user?.agentId || '').trim();
+    if (agentId) {
+      acc.set(agentId.toLowerCase(), agentId);
+    }
+    return acc;
+  }, new Map());
+
+  const mentionedUserIds = [];
+  handles.forEach((handle) => {
+    const agentId = lookup.get(handle);
+    if (agentId && !mentionedUserIds.includes(agentId)) {
+      mentionedUserIds.push(agentId);
+    }
+  });
+
+  return {
+    mentionedUserIds,
+    mentionedUsernames: [...mentionedUserIds],
+  };
+};
+
+const buildMentionNotificationPreview = (value = '') => {
+  const trimmed = String(value || '').trim().replace(/\s+/g, ' ');
+  if (!trimmed) return '';
+  return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
+};
+
 const resolveInternalMessageAccess = async ({
   messageId,
   rawUserId,
@@ -527,6 +612,8 @@ const buildInternalConversationMap = async (userId, role) => {
       lastMessage: '',
       updatedAt: null,
       unread: 0,
+      unreadMentionCount: 0,
+      latestUnreadMentionMessageId: '',
       isInternal: true,
       isTeam: false,
       previewFallback: `Message ${displayName}`,
@@ -553,6 +640,8 @@ const buildInternalConversationMap = async (userId, role) => {
       lastMessageSenderName: '',
       updatedAt: null,
       unread: 0,
+      unreadMentionCount: 0,
+      latestUnreadMentionMessageId: '',
       isInternal: true,
       isTeam: true,
       previewFallback: `Start the conversation in ${team.name}`,
@@ -1171,6 +1260,8 @@ exports.getConversations = async (req, res) => {
             lastMessage: '',
             updatedAt: null,
             unread: 0,
+            unreadMentionCount: 0,
+            latestUnreadMentionMessageId: '',
             isInternal: true,
             isTeam: false,
             previewFallback: `Message ${otherAgent.name}`,
@@ -1199,6 +1290,8 @@ exports.getConversations = async (req, res) => {
             lastMessageSenderName: '',
             updatedAt: null,
             unread: 0,
+            unreadMentionCount: 0,
+            latestUnreadMentionMessageId: '',
             isInternal: true,
             isTeam: true,
             previewFallback: `Start the conversation in ${teamRecord?.name || message.teamName || message.conversationId}`,
@@ -1221,6 +1314,15 @@ exports.getConversations = async (req, res) => {
 
       if (message.senderId !== userId && !(message.readBy || []).includes(userId)) {
         conversation.unread += 1;
+
+        if (
+          message.conversationType === 'team'
+          && !message.isDeleted
+          && (message.mentionedUserIds || []).includes(userId)
+        ) {
+          conversation.unreadMentionCount = Number(conversation.unreadMentionCount || 0) + 1;
+          conversation.latestUnreadMentionMessageId = String(message._id || '');
+        }
       }
     }
 
@@ -1384,6 +1486,8 @@ exports.sendMessage = async (req, res) => {
         readBy: [userId],
         forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
         replyTo: sanitizedReplyTo,
+        mentionedUserIds: [],
+        mentionedUsernames: [],
       };
     } else {
       const team = await ensureTeamRecord({
@@ -1397,6 +1501,7 @@ exports.sendMessage = async (req, res) => {
 
       const teamConversation = await ensureTeamConversation(team);
       const teamMembers = await resolveTeamMembers(team);
+      const mentionMetadata = await resolveTeamMentionMetadata(trimmedBody, teamMembers);
 
       payload = {
         from: userId,
@@ -1416,6 +1521,8 @@ exports.sendMessage = async (req, res) => {
         readBy: [userId],
         forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
         replyTo: sanitizedReplyTo,
+        mentionedUserIds: mentionMetadata.mentionedUserIds,
+        mentionedUsernames: mentionMetadata.mentionedUsernames,
       };
     }
 
@@ -1446,6 +1553,20 @@ exports.sendMessage = async (req, res) => {
 
     if (global.io) {
       global.io.emit('newMessage', saved);
+    }
+
+    if (conversationType === 'team' && Array.isArray(saved.mentionedUserIds)) {
+      saved.mentionedUserIds
+        .filter((mentionedUserId) => mentionedUserId && mentionedUserId !== userId)
+        .forEach((mentionedUserId) => {
+          emitSocketEventToUser(mentionedUserId, 'teamMentionNotification', {
+            teamId: saved.teamId || saved.conversationId,
+            conversationId: saved.conversationId,
+            messageId: String(saved._id || ''),
+            senderName: saved.senderName || sender.name || userId,
+            previewText: buildMentionNotificationPreview(saved.body),
+          });
+        });
     }
 
     res.json(saved);
@@ -1574,6 +1695,11 @@ exports.editMessage = async (req, res) => {
     }
 
     message.body = nextBody;
+    if (message.conversationType === 'team') {
+      const mentionMetadata = await resolveTeamMentionMetadata(nextBody, message.participants || []);
+      message.mentionedUserIds = mentionMetadata.mentionedUserIds;
+      message.mentionedUsernames = mentionMetadata.mentionedUsernames;
+    }
     message.editedAt = new Date();
     await message.save();
 

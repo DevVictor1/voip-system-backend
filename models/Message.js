@@ -49,6 +49,14 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    mentionedUserIds: {
+      type: [String],
+      default: [],
+    },
+    mentionedUsernames: {
+      type: [String],
+      default: [],
+    },
     source: {
       type: String,
       default: 'sms',
