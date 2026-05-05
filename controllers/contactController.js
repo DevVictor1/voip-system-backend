@@ -102,6 +102,28 @@ const hasContactMessageHistory = async (contact) => {
   return Boolean(historyMessage);
 };
 
+const formatCsvCell = (value) => {
+  const text = String(value ?? '');
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
+const buildContactCsvRow = (contact) => {
+  const phones = Array.isArray(contact?.phones) ? contact.phones : [];
+  const primaryPhone = normalizePhone(phones[0]?.number || '');
+  const alternatePhone = normalizePhone(phones[1]?.number || '');
+  const name = [contact?.firstName, contact?.lastName].filter(Boolean).join(' ').trim();
+
+  return [
+    name,
+    primaryPhone,
+    alternatePhone,
+    contact?.dba || '',
+    contact?.mid || '',
+    contact?.notes || '',
+    contact?.createdAt ? new Date(contact.createdAt).toISOString() : '',
+  ].map(formatCsvCell).join(',');
+};
+
 // ðŸ”¥ AUTO DETECT DBA
 const getDBA = (row) => {
   const keys = Object.keys(row);
@@ -305,6 +327,44 @@ exports.assignContact = async (req, res) => {
   } catch (err) {
     console.error('âŒ Assign error:', err);
     res.status(500).json({ error: 'Failed to assign contact' });
+  }
+};
+
+exports.exportContacts = async (req, res) => {
+  try {
+    const { role = 'admin', userId = null } = req.query;
+
+    let filter = { isArchived: { $ne: true } };
+    if (role === 'agent') {
+      filter = {
+        isArchived: { $ne: true },
+        $or: [
+          { assignedTo: userId },
+          { isUnassigned: true },
+        ],
+      };
+    }
+
+    const contacts = await Contact.find(filter).sort({ createdAt: -1 });
+    const header = [
+      'Name',
+      'Primary phone',
+      'Alternate phone',
+      'Business',
+      'Merchant ID',
+      'Notes',
+      'Created date',
+    ].map(formatCsvCell).join(',');
+    const rows = contacts.map(buildContactCsvRow);
+    const csv = [header, ...rows].join('\n');
+    const dateLabel = new Date().toISOString().slice(0, 10);
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="contacts_export_${dateLabel}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    console.error('Export contacts error:', error);
+    res.status(500).json({ error: 'Failed to export contacts' });
   }
 };
 

@@ -5,6 +5,7 @@ const multer = require('multer');
 const {
   importContacts,
   getContacts,
+  exportContacts,
   upsertContact,
   updateContact,
   deleteContact,
@@ -20,6 +21,7 @@ const upload = multer({ dest: 'uploads/' });
 router.post('/import', upload.single('file'), importContacts);
 
 // 📚 GET (WITH ROLE FILTER)
+router.get('/export', exportContacts);
 router.get('/', getContacts);
 router.post('/upsert', upsertContact);
 router.put('/:id', updateContact);
