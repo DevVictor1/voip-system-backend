@@ -115,6 +115,26 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    replyTo: {
+      type: new mongoose.Schema(
+        {
+          messageId: {
+            type: String,
+            default: null,
+          },
+          senderName: {
+            type: String,
+            default: '',
+          },
+          body: {
+            type: String,
+            default: '',
+          },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
 
     read: {
       type: Boolean,

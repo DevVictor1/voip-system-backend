@@ -1326,6 +1326,7 @@ exports.sendMessage = async (req, res) => {
       userId: rawUserId,
       body,
       forwardedFromMessageId,
+      replyTo: rawReplyTo,
     } = req.body || {};
 
     const userId = await normalizeUserId(rawUserId);
@@ -1340,6 +1341,16 @@ exports.sendMessage = async (req, res) => {
     }
 
     const sender = getAgentMeta(userId);
+    const replyTo = rawReplyTo && typeof rawReplyTo === 'object'
+      ? {
+          messageId: String(rawReplyTo.messageId || rawReplyTo.id || '').trim() || null,
+          senderName: String(rawReplyTo.senderName || rawReplyTo.senderLabel || '').trim() || '',
+          body: String(rawReplyTo.body || '').trim() || '',
+        }
+      : null;
+    const sanitizedReplyTo = replyTo?.messageId
+      ? replyTo
+      : null;
     let payload;
 
     if (conversationType === 'internal_dm') {
@@ -1372,6 +1383,7 @@ exports.sendMessage = async (req, res) => {
         read: true,
         readBy: [userId],
         forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
+        replyTo: sanitizedReplyTo,
       };
     } else {
       const team = await ensureTeamRecord({
@@ -1403,6 +1415,7 @@ exports.sendMessage = async (req, res) => {
         read: true,
         readBy: [userId],
         forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
+        replyTo: sanitizedReplyTo,
       };
     }
 
