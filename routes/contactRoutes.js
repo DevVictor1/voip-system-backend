@@ -6,6 +6,7 @@ const {
   importContacts,
   getContacts,
   upsertContact,
+  updateContact,
   deleteContact,
   clearContacts,
   assignContact,
@@ -21,6 +22,7 @@ router.post('/import', upload.single('file'), importContacts);
 // 📚 GET (WITH ROLE FILTER)
 router.get('/', getContacts);
 router.post('/upsert', upsertContact);
+router.put('/:id', updateContact);
 
 // 👤 ASSIGN
 router.put('/:id/assign', assignContact);

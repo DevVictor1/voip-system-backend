@@ -2,6 +2,7 @@
 const csv = require('csv-parser');
 const xlsx = require('xlsx');
 const Contact = require('../models/Contact');
+const Message = require('../models/Message');
 const {
   normalizeAgentId,
   syncAssignmentWorkload,
@@ -23,6 +24,30 @@ const normalizePhone = (phone) => {
 };
 
 const normalizePhoneKey = (phone) => normalizePhone(phone).slice(-10);
+const isAdminRole = (value) => String(value || '').trim().toLowerCase() === 'admin';
+
+const buildPhoneEntries = ({ primaryPhone = '', alternatePhone = '', existingPhones = [] }) => {
+  const normalizedExisting = Array.isArray(existingPhones)
+    ? existingPhones.map((entry) => ({
+        label: String(entry?.label || '').trim() || 'secondary',
+        number: normalizePhone(entry?.number),
+      }))
+    : [];
+
+  const candidates = [
+    { label: 'primary', number: normalizePhone(primaryPhone) },
+    { label: 'alternate', number: normalizePhone(alternatePhone) },
+    ...normalizedExisting,
+  ].filter((entry) => entry.number);
+
+  const seen = new Set();
+  return candidates.filter((entry) => {
+    const key = normalizePhoneKey(entry.number);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 
 const splitContactName = (value) => {
   const trimmed = String(value || '').trim();
@@ -54,6 +79,27 @@ const findExistingContactByPhone = async (phone) => {
   }
 
   return Contact.findOne({ $or: phoneMatchers });
+};
+
+const hasContactMessageHistory = async (contact) => {
+  const numbers = Array.isArray(contact?.phones)
+    ? contact.phones.map((entry) => normalizePhone(entry?.number)).filter(Boolean)
+    : [];
+
+  const conversationIds = [...new Set(numbers.map((number) => normalizePhoneKey(number)).filter(Boolean))];
+  if (conversationIds.length === 0) {
+    return false;
+  }
+
+  const historyMessage = await Message.findOne({
+    $or: [
+      { conversationType: { $exists: false } },
+      { conversationType: 'customer' },
+    ],
+    conversationId: { $in: conversationIds },
+  }).select('_id');
+
+  return Boolean(historyMessage);
 };
 
 // ðŸ”¥ AUTO DETECT DBA
@@ -181,12 +227,14 @@ exports.importContacts = async (req, res) => {
 exports.getContacts = async (req, res) => {
   try {
     const { role = 'admin', userId = null } = req.query;
+    const includeArchived = String(req.query?.includeArchived || '').trim().toLowerCase() === 'true';
 
-    let filter = {};
+    let filter = includeArchived ? {} : { isArchived: { $ne: true } };
 
     // ðŸ”¥ AGENT: only see assigned + unassigned
     if (role === 'agent') {
       filter = {
+        ...(includeArchived ? {} : { isArchived: { $ne: true } }),
         $or: [
           { assignedTo: userId },
           { isUnassigned: true }
@@ -306,6 +354,8 @@ exports.upsertContact = async (req, res) => {
       existingContact.mid = trimmedMerchantId || existingContact.mid || '';
       existingContact.notes = trimmedNotes || existingContact.notes || '';
       existingContact.phones = nextPhones;
+      existingContact.isArchived = false;
+      existingContact.archivedAt = null;
 
       const updated = await existingContact.save();
       return res.json({ contact: updated, created: false });
@@ -385,12 +435,88 @@ exports.updateAssignmentStatus = async (req, res) => {
   }
 };
 
+exports.updateContact = async (req, res) => {
+  try {
+    if (!isAdminRole(req.body?.role || req.query?.role)) {
+      return res.status(403).json({ error: 'Only admins can edit contacts' });
+    }
+
+    const { id } = req.params;
+    const {
+      name = '',
+      phone = '',
+      alternatePhone = '',
+      business = '',
+      merchantId = '',
+      notes = '',
+    } = req.body || {};
+
+    const normalizedPhone = normalizePhone(phone);
+    const phoneKey = normalizePhoneKey(phone);
+
+    if (!normalizedPhone || !phoneKey) {
+      return res.status(400).json({ error: 'Valid phone number is required' });
+    }
+
+    const existingContact = await Contact.findById(id);
+
+    if (!existingContact) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+
+    const { firstName, lastName } = splitContactName(name);
+    const nextPhones = buildPhoneEntries({
+      primaryPhone: normalizedPhone,
+      alternatePhone,
+      existingPhones: existingContact.phones,
+    });
+
+    if (nextPhones.length === 0) {
+      return res.status(400).json({ error: 'At least one valid phone number is required' });
+    }
+
+    existingContact.firstName = firstName;
+    existingContact.lastName = lastName;
+    existingContact.dba = String(business || '').trim();
+    existingContact.mid = String(merchantId || '').trim();
+    existingContact.notes = String(notes || '').trim();
+    existingContact.phones = nextPhones;
+    existingContact.isArchived = false;
+    existingContact.archivedAt = null;
+
+    const updated = await existingContact.save();
+    return res.json({ contact: updated });
+  } catch (error) {
+    console.error('Update contact error:', error);
+    return res.status(500).json({ error: 'Failed to update contact' });
+  }
+};
+
 // ðŸ—‘ DELETE
 exports.deleteContact = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!isAdminRole(req.body?.role || req.query?.role)) {
+      return res.status(403).json({ error: 'Only admins can delete contacts' });
+    }
+
+    const existingContact = await Contact.findById(id);
+    if (!existingContact) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+
+    const hasHistory = await hasContactMessageHistory(existingContact);
+
+    if (hasHistory) {
+      existingContact.isArchived = true;
+      existingContact.archivedAt = new Date();
+      await existingContact.save();
+      return res.json({ success: true, archived: true, deleted: false });
+    }
+
     await Contact.findByIdAndDelete(id);
-    res.json({ success: true });
+    res.json({ success: true, archived: false, deleted: true });
   } catch (error) {
     console.error('âŒ Delete error:', error);
     res.status(500).json({ error: 'Failed to delete contact' });

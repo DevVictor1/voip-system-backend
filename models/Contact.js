@@ -48,7 +48,15 @@ const contactSchema = new mongoose.Schema(
     enum: CONTACT_ASSIGNMENT_STATUSES,
     default: 'open',
     trim: true,
-  }
+  },
+  isArchived: {
+    type: Boolean,
+    default: false,
+  },
+  archivedAt: {
+    type: Date,
+    default: null,
+  },
 },
 { timestamps: true }
 );
@@ -56,6 +64,7 @@ const contactSchema = new mongoose.Schema(
 contactSchema.set('toJSON', {
   transform: (_doc, ret) => {
     ret.assignmentStatus = ret.assignmentStatus || 'open';
+    ret.isArchived = Boolean(ret.isArchived);
     return ret;
   },
 });
