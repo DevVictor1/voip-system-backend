@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const TEAM_DEPARTMENTS = ['tech', 'support', 'sales'];
+const TEAM_CALENDAR_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Ho_Chi_Minh'];
 
 const teamSchema = new mongoose.Schema(
   {
@@ -27,6 +28,12 @@ const teamSchema = new mongoose.Schema(
     createdBy: {
       type: String,
       default: '',
+      trim: true,
+    },
+    calendarTimezone: {
+      type: String,
+      enum: TEAM_CALENDAR_TIMEZONES,
+      default: 'America/New_York',
       trim: true,
     },
     isActive: {

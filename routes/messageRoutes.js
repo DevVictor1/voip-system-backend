@@ -7,6 +7,7 @@ const {
   createTeamConversation,
   getTeamDetails,
   getTeamCalendarEvents,
+  updateTeamCalendarTimezone,
   createTeamCalendarEvent,
   updateTeamCalendarEvent,
   deleteTeamCalendarEvent,
@@ -32,6 +33,7 @@ router.post('/direct/start', startDirectConversation);
 router.post('/team', createTeamConversation);
 router.get('/team/:conversationId/details', getTeamDetails);
 router.get('/team/:conversationId/calendar', getTeamCalendarEvents);
+router.patch('/team/:conversationId/calendar/timezone', updateTeamCalendarTimezone);
 router.post('/team/:conversationId/calendar', createTeamCalendarEvent);
 router.put('/team/:conversationId/calendar/:eventId', updateTeamCalendarEvent);
 router.patch('/team/:conversationId/calendar/:eventId/pin', toggleTeamCalendarEventPin);

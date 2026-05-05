@@ -13,6 +13,7 @@ const {
 const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
 const TEAM_MENTION_PATTERN = /(^|\s)@([A-Za-z0-9._-]+)/g;
+const TEAM_CALENDAR_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Ho_Chi_Minh'];
 const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 const normalizeUserIdValue = (userId) => {
@@ -616,6 +617,7 @@ const emitTeamCalendarUpdate = async ({
   const payload = {
     conversationId: conversationId || team.slug,
     teamId: team.slug,
+    calendarTimezone: team.calendarTimezone || 'America/New_York',
     action,
     eventId: String(eventId || event?._id || ''),
     event: event ? await buildGroupCalendarEventPayload(event) : null,
@@ -624,6 +626,11 @@ const emitTeamCalendarUpdate = async ({
   participants.forEach((participantId) => {
     emitSocketEventToUser(participantId, 'teamCalendarUpdated', payload);
   });
+};
+
+const normalizeCalendarTimezone = (value = '') => {
+  const timezone = String(value || '').trim();
+  return TEAM_CALENDAR_TIMEZONES.includes(timezone) ? timezone : 'America/New_York';
 };
 
 const resolveInternalMessageAccess = async ({
@@ -1155,11 +1162,59 @@ exports.getTeamCalendarEvents = async (req, res) => {
       conversationId,
       teamId: team.slug,
       teamName: team.name,
+      calendarTimezone: normalizeCalendarTimezone(team.calendarTimezone),
       events: payload,
     });
   } catch (error) {
     console.error('❌ Team calendar fetch error:', error);
     return res.status(500).json({ error: 'Failed to fetch group calendar events' });
+  }
+};
+
+exports.updateTeamCalendarTimezone = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId);
+    const role = resolveRole(req.body?.role);
+    const nextTimezone = String(req.body?.calendarTimezone || '').trim();
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    if (!TEAM_CALENDAR_TIMEZONES.includes(nextTimezone)) {
+      return res.status(400).json({ error: 'Unsupported calendar timezone' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const canAccess = await canAccessTeam(team, userId, role);
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    team.calendarTimezone = nextTimezone;
+    await team.save();
+
+    await emitTeamCalendarUpdate({
+      team,
+      conversationId,
+      action: 'timezoneUpdated',
+    });
+
+    return res.json({
+      success: true,
+      conversationId,
+      teamId: team.slug,
+      calendarTimezone: normalizeCalendarTimezone(team.calendarTimezone),
+    });
+  } catch (error) {
+    console.error('❌ Team calendar timezone update error:', error);
+    return res.status(500).json({ error: 'Failed to update calendar timezone' });
   }
 };
 
