@@ -679,6 +679,10 @@ exports.deleteUser = async (req, res) => {
         delete global.connectedUsers[agentId];
       }
 
+      if (global.connectedUserSockets) {
+        delete global.connectedUserSockets[agentId];
+      }
+
       if (global.agentStatus) {
         delete global.agentStatus[agentId];
       }

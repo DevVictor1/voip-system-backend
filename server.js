@@ -100,6 +100,8 @@ global.io = io;
 // 🔥 STORE USERS
 const users = {};
 global.connectedUsers = users;
+const connectedUserSockets = {};
+global.connectedUserSockets = connectedUserSockets;
 const agentStatus = {};
 global.agentStatus = agentStatus;
 const agentVoiceReady = {};
@@ -113,21 +115,33 @@ io.on('connection', (socket) => {
     const userId = typeof payload === 'string' ? payload : payload?.userId;
     const status = payload?.status;
     const voiceReady = payload?.voiceReady;
+    const availabilityStatus = payload?.availabilityStatus;
 
     if (!userId) {
       console.log('⚠️ registerUser skipped: missing userId');
       return;
     }
 
+    if (!connectedUserSockets[userId]) {
+      connectedUserSockets[userId] = new Set();
+    }
+
+    connectedUserSockets[userId].add(socket.id);
     users[userId] = socket.id;
     agentStatus[userId] = status || agentStatus[userId] || 'online';
     agentVoiceReady[userId] = typeof voiceReady === 'boolean'
       ? voiceReady
       : Boolean(agentVoiceReady[userId]);
     socket.data.userId = userId;
+    socket.data.registeredUserId = userId;
     console.log(
       `✅ Registered ${userId} → ${socket.id} | status=${agentStatus[userId]} | voiceReady=${agentVoiceReady[userId]}`
     );
+
+    io.emit('agentStatus', { userId, status: agentStatus[userId] });
+    if (availabilityStatus) {
+      io.emit('agentAvailabilityStatus', { userId, availabilityStatus });
+    }
   });
 
   socket.on('agentStatus', (data) => {
@@ -159,20 +173,24 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('❌ Disconnected:', socket.id);
 
-    const disconnectedUserId = socket.data?.userId;
+    const disconnectedUserId = socket.data?.registeredUserId || socket.data?.userId;
 
-    for (const userId in users) {
-      if (users[userId] === socket.id) {
-        delete users[userId];
-        agentStatus[userId] = 'offline';
-        agentVoiceReady[userId] = false;
-        io.emit('agentStatus', { userId, status: 'offline' });
-        console.log(`📴 Agent disconnected ${userId} | voiceReady=false`);
+    if (disconnectedUserId) {
+      const socketSet = connectedUserSockets[disconnectedUserId];
+      if (socketSet) {
+        socketSet.delete(socket.id);
       }
-    }
 
-    if (disconnectedUserId && !users[disconnectedUserId]) {
-      agentVoiceReady[disconnectedUserId] = false;
+      if (socketSet && socketSet.size > 0) {
+        users[disconnectedUserId] = Array.from(socketSet)[0];
+      } else {
+        delete connectedUserSockets[disconnectedUserId];
+        delete users[disconnectedUserId];
+        agentStatus[disconnectedUserId] = 'offline';
+        agentVoiceReady[disconnectedUserId] = false;
+        io.emit('agentStatus', { userId: disconnectedUserId, status: 'offline' });
+        console.log(`📴 Agent disconnected ${disconnectedUserId} | voiceReady=false`);
+      }
     }
   });
 });
