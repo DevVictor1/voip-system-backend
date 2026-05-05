@@ -3,6 +3,7 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
 const GroupCalendarEvent = require('../models/GroupCalendarEvent');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -32,6 +33,11 @@ const ALLOWED_INTERNAL_ATTACHMENT_TYPES = new Set([
   'text/plain',
   'text/csv',
 ]);
+const LINK_PREVIEW_URL_PATTERN = /\bhttps?:\/\/[^\s<>"')]+/i;
+const LINK_PREVIEW_META_PATTERN = /<meta\s+[^>]*?(?:property|name)\s*=\s*["']([^"']+)["'][^>]*?content\s*=\s*["']([^"']*)["'][^>]*?>/gi;
+const LINK_PREVIEW_TITLE_PATTERN = /<title[^>]*>([^<]*)<\/title>/i;
+const LINK_PREVIEW_TIMEOUT_MS = 1200;
+const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
 
 const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
@@ -644,6 +650,127 @@ const buildMessagePreview = (message) => {
 
   const attachmentName = String(message.attachment?.fileName || '').trim();
   return attachmentName ? `Attachment: ${attachmentName}` : '';
+};
+
+const decodeHtmlEntities = (value = '') => (
+  String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, '\'')
+    .replace(/&apos;/gi, '\'')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .trim()
+);
+
+const getHtmlMetaValue = (html = '', names = []) => {
+  if (!html || !Array.isArray(names) || names.length === 0) return '';
+
+  const normalizedNames = names.map((name) => String(name || '').trim().toLowerCase()).filter(Boolean);
+  let match;
+
+  while ((match = LINK_PREVIEW_META_PATTERN.exec(html)) !== null) {
+    const key = String(match[1] || '').trim().toLowerCase();
+    if (!normalizedNames.includes(key)) {
+      continue;
+    }
+
+    const value = decodeHtmlEntities(match[2] || '');
+    if (value) {
+      LINK_PREVIEW_META_PATTERN.lastIndex = 0;
+      return value;
+    }
+  }
+
+  LINK_PREVIEW_META_PATTERN.lastIndex = 0;
+  return '';
+};
+
+const normalizeLinkPreviewUrl = (value = '') => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    return parsed.toString();
+  } catch (error) {
+    return '';
+  }
+};
+
+const extractFirstPreviewUrl = (body = '') => {
+  const match = String(body || '').match(LINK_PREVIEW_URL_PATTERN);
+  return normalizeLinkPreviewUrl(match?.[0] || '');
+};
+
+const buildAbsolutePreviewAssetUrl = (value = '', baseUrl = '') => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  try {
+    return new URL(raw, baseUrl).toString();
+  } catch (error) {
+    return '';
+  }
+};
+
+const fetchLinkPreviewMetadata = async (body = '') => {
+  const previewUrl = extractFirstPreviewUrl(body);
+  if (!previewUrl) {
+    return null;
+  }
+
+  try {
+    const response = await axios.get(previewUrl, {
+      timeout: LINK_PREVIEW_TIMEOUT_MS,
+      maxRedirects: 5,
+      maxContentLength: LINK_PREVIEW_MAX_BYTES,
+      responseType: 'text',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 (compatible; VoIPInternalChatLinkPreview/1.0)',
+      },
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+    if (!contentType.includes('text/html')) {
+      return null;
+    }
+
+    const html = String(response.data || '').slice(0, LINK_PREVIEW_MAX_BYTES);
+    if (!html) {
+      return null;
+    }
+
+    const parsedUrl = new URL(response.request?.res?.responseUrl || previewUrl);
+    const title = getHtmlMetaValue(html, ['og:title', 'twitter:title'])
+      || decodeHtmlEntities((html.match(LINK_PREVIEW_TITLE_PATTERN) || [])[1] || '');
+    const description = getHtmlMetaValue(html, ['og:description', 'twitter:description', 'description']);
+    const siteName = getHtmlMetaValue(html, ['og:site_name']) || parsedUrl.hostname.replace(/^www\./i, '');
+    const image = buildAbsolutePreviewAssetUrl(
+      getHtmlMetaValue(html, ['og:image', 'twitter:image', 'twitter:image:src']),
+      parsedUrl.toString()
+    );
+
+    if (!title && !description && !siteName && !image) {
+      return null;
+    }
+
+    return {
+      url: parsedUrl.toString(),
+      domain: parsedUrl.hostname.replace(/^www\./i, ''),
+      title: title || parsedUrl.hostname.replace(/^www\./i, ''),
+      description,
+      siteName,
+      image,
+    };
+  } catch (error) {
+    return null;
+  }
 };
 
 const toValidDate = (value) => {
@@ -2043,6 +2170,7 @@ exports.sendMessage = async (req, res) => {
     const sanitizedReplyTo = replyTo?.messageId
       ? replyTo
       : null;
+    const linkPreview = attachment ? null : await fetchLinkPreviewMetadata(trimmedBody);
     let payload;
 
     if (conversationType === 'internal_dm') {
@@ -2077,6 +2205,7 @@ exports.sendMessage = async (req, res) => {
         readBy: [userId],
         forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
         replyTo: sanitizedReplyTo,
+        linkPreview,
         mentionedUserIds: [],
         mentionedUsernames: [],
       };
@@ -2113,6 +2242,7 @@ exports.sendMessage = async (req, res) => {
         readBy: [userId],
         forwardedFromMessageId: String(forwardedFromMessageId || '').trim() || null,
         replyTo: sanitizedReplyTo,
+        linkPreview,
         mentionedUserIds: mentionMetadata.mentionedUserIds,
         mentionedUsernames: mentionMetadata.mentionedUsernames,
       };
@@ -2287,6 +2417,7 @@ exports.editMessage = async (req, res) => {
     }
 
     message.body = nextBody;
+    message.linkPreview = message.attachment ? null : await fetchLinkPreviewMetadata(nextBody);
     if (message.conversationType === 'team') {
       const mentionMetadata = await resolveTeamMentionMetadata(nextBody, message.participants || []);
       message.mentionedUserIds = mentionMetadata.mentionedUserIds;
@@ -2338,6 +2469,7 @@ exports.softDeleteMessage = async (req, res) => {
       message.pinnedAt = null;
       message.pinnedBy = null;
       message.reactions = [];
+      message.linkPreview = null;
       message.body = '';
       await message.save();
     }

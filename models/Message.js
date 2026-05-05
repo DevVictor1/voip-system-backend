@@ -93,6 +93,38 @@ const messageSchema = new mongoose.Schema(
       ),
       default: null,
     },
+    linkPreview: {
+      type: new mongoose.Schema(
+        {
+          url: {
+            type: String,
+            default: '',
+          },
+          domain: {
+            type: String,
+            default: '',
+          },
+          title: {
+            type: String,
+            default: '',
+          },
+          description: {
+            type: String,
+            default: '',
+          },
+          siteName: {
+            type: String,
+            default: '',
+          },
+          image: {
+            type: String,
+            default: '',
+          },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     isDeleted: {
       type: Boolean,
       default: false,
