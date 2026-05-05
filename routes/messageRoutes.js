@@ -6,6 +6,10 @@ const {
   startDirectConversation,
   createTeamConversation,
   getTeamDetails,
+  getTeamCalendarEvents,
+  createTeamCalendarEvent,
+  updateTeamCalendarEvent,
+  deleteTeamCalendarEvent,
   updateTeamDetails,
   leaveTeamConversation,
   deleteTeamConversation,
@@ -26,6 +30,10 @@ router.get('/conversation/:conversationId', getConversationRecord);
 router.post('/direct/start', startDirectConversation);
 router.post('/team', createTeamConversation);
 router.get('/team/:conversationId/details', getTeamDetails);
+router.get('/team/:conversationId/calendar', getTeamCalendarEvents);
+router.post('/team/:conversationId/calendar', createTeamCalendarEvent);
+router.put('/team/:conversationId/calendar/:eventId', updateTeamCalendarEvent);
+router.delete('/team/:conversationId/calendar/:eventId', deleteTeamCalendarEvent);
 router.put('/team/:conversationId/details', updateTeamDetails);
 router.post('/team/:conversationId/leave', leaveTeamConversation);
 router.delete('/team/:conversationId', deleteTeamConversation);

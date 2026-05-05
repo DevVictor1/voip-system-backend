@@ -2,6 +2,7 @@ const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
+const GroupCalendarEvent = require('../models/GroupCalendarEvent');
 const {
   INTERNAL_AGENTS,
   TEAM_CHANNELS,
@@ -547,6 +548,37 @@ const buildMentionNotificationPreview = (value = '') => {
   return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
 };
 
+const toValidDate = (value) => {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+};
+
+const canAccessTeam = async (team, userId, role) => {
+  if (!team || !userId) return false;
+  if (role === 'admin') return true;
+
+  const members = await resolveTeamMembers(team);
+  return members.includes(userId);
+};
+
+const canManageCalendarEvent = (event, userId, role) => {
+  if (!event || !userId) return false;
+  return role === 'admin' || String(event.createdBy || '') === String(userId || '');
+};
+
+const buildGroupCalendarEventPayload = async (event) => {
+  const eventRecord = typeof event?.toObject === 'function' ? event.toObject() : { ...(event || {}) };
+  const creatorId = String(eventRecord.createdBy || '').trim();
+  const creator = creatorId
+    ? await User.findOne({ agentId: creatorId, isActive: true }).select('name agentId')
+    : null;
+
+  return {
+    ...eventRecord,
+    createdByName: creator?.name || creator?.agentId || creatorId || 'Teammate',
+  };
+};
+
 const resolveInternalMessageAccess = async ({
   messageId,
   rawUserId,
@@ -1005,6 +1037,8 @@ exports.deleteTeamConversation = async (req, res) => {
       }
     );
 
+    await GroupCalendarEvent.deleteMany({ teamId: team.slug });
+
     return res.json({
       success: true,
       conversationId: team.slug,
@@ -1042,6 +1076,186 @@ exports.getTeamDetails = async (req, res) => {
   } catch (error) {
     console.error('❌ Team details error:', error);
     res.status(500).json({ error: 'Failed to fetch team details' });
+  }
+};
+
+exports.getTeamCalendarEvents = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.query.userId);
+    const role = resolveRole(req.query.role);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const canAccess = await canAccessTeam(team, userId, role);
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const events = await GroupCalendarEvent.find({ teamId: team.slug })
+      .sort({ startAt: 1, createdAt: 1 });
+    const payload = await Promise.all(events.map((event) => buildGroupCalendarEventPayload(event)));
+
+    return res.json({
+      conversationId,
+      teamId: team.slug,
+      teamName: team.name,
+      events: payload,
+    });
+  } catch (error) {
+    console.error('❌ Team calendar fetch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch group calendar events' });
+  }
+};
+
+exports.createTeamCalendarEvent = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId);
+    const role = resolveRole(req.body?.role);
+    const title = String(req.body?.title || '').trim();
+    const description = String(req.body?.description || '').trim();
+    const startAt = toValidDate(req.body?.startAt);
+    const endAt = toValidDate(req.body?.endAt);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    if (!title || !startAt || !endAt) {
+      return res.status(400).json({ error: 'Title, start time, and end time are required' });
+    }
+
+    if (endAt <= startAt) {
+      return res.status(400).json({ error: 'End time must be after start time' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const canAccess = await canAccessTeam(team, userId, role);
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const event = await GroupCalendarEvent.create({
+      teamId: team.slug,
+      title,
+      description,
+      startAt,
+      endAt,
+      createdBy: userId,
+    });
+
+    return res.status(201).json(await buildGroupCalendarEventPayload(event));
+  } catch (error) {
+    console.error('❌ Team calendar create error:', error);
+    return res.status(500).json({ error: 'Failed to create group calendar event' });
+  }
+};
+
+exports.updateTeamCalendarEvent = async (req, res) => {
+  try {
+    const { conversationId, eventId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId);
+    const role = resolveRole(req.body?.role);
+    const title = String(req.body?.title || '').trim();
+    const description = String(req.body?.description || '').trim();
+    const startAt = toValidDate(req.body?.startAt);
+    const endAt = toValidDate(req.body?.endAt);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    if (!title || !startAt || !endAt) {
+      return res.status(400).json({ error: 'Title, start time, and end time are required' });
+    }
+
+    if (endAt <= startAt) {
+      return res.status(400).json({ error: 'End time must be after start time' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const canAccess = await canAccessTeam(team, userId, role);
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const event = await GroupCalendarEvent.findOne({ _id: eventId, teamId: team.slug });
+    if (!event) {
+      return res.status(404).json({ error: 'Calendar event not found' });
+    }
+
+    if (!canManageCalendarEvent(event, userId, role)) {
+      return res.status(403).json({ error: 'Only the event creator or an admin can update this event' });
+    }
+
+    event.title = title;
+    event.description = description;
+    event.startAt = startAt;
+    event.endAt = endAt;
+    await event.save();
+
+    return res.json(await buildGroupCalendarEventPayload(event));
+  } catch (error) {
+    console.error('❌ Team calendar update error:', error);
+    return res.status(500).json({ error: 'Failed to update group calendar event' });
+  }
+};
+
+exports.deleteTeamCalendarEvent = async (req, res) => {
+  try {
+    const { conversationId, eventId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId || req.query?.userId);
+    const role = resolveRole(req.body?.role || req.query?.role);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const canAccess = await canAccessTeam(team, userId, role);
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const event = await GroupCalendarEvent.findOne({ _id: eventId, teamId: team.slug });
+    if (!event) {
+      return res.status(404).json({ error: 'Calendar event not found' });
+    }
+
+    if (!canManageCalendarEvent(event, userId, role)) {
+      return res.status(403).json({ error: 'Only the event creator or an admin can delete this event' });
+    }
+
+    await GroupCalendarEvent.deleteOne({ _id: event._id });
+
+    return res.json({ success: true, eventId: String(event._id) });
+  } catch (error) {
+    console.error('❌ Team calendar delete error:', error);
+    return res.status(500).json({ error: 'Failed to delete group calendar event' });
   }
 };
 
