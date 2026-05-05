@@ -63,7 +63,7 @@ const getActiveInternalUsers = async () => {
     isActive: true,
     agentId: { $type: 'string', $ne: '' },
   })
-    .select('name role agentId department isActive')
+    .select('name role agentId department isActive avatarUrl')
     .sort({ name: 1, createdAt: 1 });
 };
 
@@ -375,6 +375,7 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
         name: user?.name || fallbackMeta?.name || agentId,
         role: departmentLabel || (user?.role === 'admin' ? 'Admin' : user?.role || fallbackMeta?.role || 'Teammate'),
         department: departmentLabel,
+        avatarUrl: user?.avatarUrl || '',
         isCurrentUser: agentId === currentUserId,
       };
     }),
@@ -695,6 +696,7 @@ const buildInternalConversationMap = async (userId, role) => {
       name: displayName,
       role: roleLabel,
       agentId,
+      avatarUrl: user.avatarUrl || '',
       lastMessage: '',
       updatedAt: null,
       unread: 0,
@@ -1564,6 +1566,12 @@ exports.getConversations = async (req, res) => {
 
     const conversations = await buildInternalConversationMap(userId, role);
     const activeUsers = await getActiveInternalUsers();
+    const activeUsersByAgentId = activeUsers.reduce((acc, user) => {
+      if (user?.agentId) {
+        acc[user.agentId] = user;
+      }
+      return acc;
+    }, {});
     const activeUserAgentIds = new Set(
       activeUsers
         .map((user) => normalizeUserIdValue(user?.agentId))
@@ -1589,6 +1597,7 @@ exports.getConversations = async (req, res) => {
       }
 
       const otherAgent = getAgentMeta(otherAgentId);
+      const otherAgentRecord = activeUsersByAgentId[otherAgentId];
       const conversationId = conversation.conversationId || buildDmConversationId(...participants);
 
       conversations.set(conversationId, {
@@ -1600,6 +1609,7 @@ exports.getConversations = async (req, res) => {
         name: conversation.title || otherAgent.name,
         role: otherAgent.role,
         agentId: otherAgentId,
+        avatarUrl: otherAgentRecord?.avatarUrl || '',
         lastMessage: conversation.lastMessagePreview || '',
         updatedAt: conversation.lastMessageAt || conversation.updatedAt || null,
         unread: 0,
@@ -1636,6 +1646,7 @@ exports.getConversations = async (req, res) => {
 
           const conversationRecord = await ensureDmConversationForMessage(message);
           const otherAgent = getAgentMeta(otherAgentId);
+          const otherAgentRecord = activeUsersByAgentId[otherAgentId];
           const resolvedConversationId = conversationRecord?.conversationId || message.conversationId;
 
           conversations.set(resolvedConversationId, {
@@ -1647,6 +1658,7 @@ exports.getConversations = async (req, res) => {
             name: conversationRecord?.title || otherAgent.name,
             role: otherAgent.role,
             agentId: otherAgentId,
+            avatarUrl: otherAgentRecord?.avatarUrl || '',
             lastMessage: '',
             updatedAt: null,
             unread: 0,

@@ -5,6 +5,7 @@ const {
   listTeammates,
   listAgentStatus,
   updateMyAvailabilityStatus,
+  updateMyAvatar,
   bootstrapUser,
   listUsers,
   createUser,
@@ -20,6 +21,7 @@ const router = express.Router();
 router.post('/login', login);
 router.get('/me', authenticate, me);
 router.patch('/me/availability-status', authenticate, updateMyAvailabilityStatus);
+router.patch('/me/avatar', authenticate, updateMyAvatar);
 router.get('/teammates', authenticate, listTeammates);
 router.get('/agent-status', authenticate, requireRole('admin'), listAgentStatus);
 router.post('/bootstrap', bootstrapUser);

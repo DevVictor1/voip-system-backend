@@ -73,6 +73,11 @@ const userSchema = new mongoose.Schema(
       default: 1,
       min: 0,
     },
+    avatarUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     isAssignable: {
       type: Boolean,
       default: true,
@@ -115,6 +120,7 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       maxActiveChats: Number.isFinite(this.maxActiveChats) ? this.maxActiveChats : 5,
       currentActiveChats: Number.isFinite(this.currentActiveChats) ? this.currentActiveChats : 0,
       maxConcurrentCalls: Number.isFinite(this.maxConcurrentCalls) ? this.maxConcurrentCalls : 1,
+      avatarUrl: this.avatarUrl || '',
       isAssignable: typeof this.isAssignable === 'boolean' ? this.isAssignable : true,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,

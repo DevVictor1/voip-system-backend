@@ -4,6 +4,9 @@ const Call = require('../models/Call');
 
 const DEFAULT_EXPIRES_IN = '7d';
 const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answer'];
+const ALLOWED_AVATAR_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const AVATAR_DATA_URL_PATTERN = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/i;
+const MAX_AVATAR_BYTES = 350 * 1024;
 
 const getJwtSecret = () => {
   return process.env.JWT_SECRET || process.env.JWT_ACCESS_SECRET || '';
@@ -33,6 +36,7 @@ const sanitizeTeammate = (user) => ({
   department: user.department,
   isActive: user.isActive,
   status: user.status || 'offline',
+  avatarUrl: user.avatarUrl || '',
   maxActiveChats: Number.isFinite(user.maxActiveChats) ? user.maxActiveChats : 5,
   currentActiveChats: Number.isFinite(user.currentActiveChats) ? user.currentActiveChats : 0,
   maxConcurrentCalls: Number.isFinite(user.maxConcurrentCalls) ? user.maxConcurrentCalls : 1,
@@ -135,6 +139,43 @@ const normalizeAvailabilityStatus = (status) => {
   }
 
   return 'online';
+};
+
+const normalizeAvatarDataUrl = (value) => {
+  const trimmed = String(value || '').trim();
+
+  if (!trimmed) {
+    return { error: 'Avatar image is required' };
+  }
+
+  const match = trimmed.match(AVATAR_DATA_URL_PATTERN);
+  if (!match) {
+    return { error: 'Avatar must be a PNG, JPG, WEBP, or GIF image' };
+  }
+
+  const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
+  if (!ALLOWED_AVATAR_MIME_TYPES.has(mimeType)) {
+    return { error: 'Avatar must be a PNG, JPG, WEBP, or GIF image' };
+  }
+
+  let buffer;
+  try {
+    buffer = Buffer.from(match[2], 'base64');
+  } catch (error) {
+    return { error: 'Avatar image is not valid base64 data' };
+  }
+
+  if (!buffer.length) {
+    return { error: 'Avatar image is empty' };
+  }
+
+  if (buffer.length > MAX_AVATAR_BYTES) {
+    return { error: 'Avatar image must be 350 KB or smaller' };
+  }
+
+  return {
+    value: `data:${mimeType};base64,${buffer.toString('base64')}`,
+  };
 };
 
 const resolveConnectedState = (agentId) => {
@@ -301,7 +342,7 @@ exports.listTeammates = async (req, res) => {
       agentId: { $type: 'string', $ne: '' },
       _id: { $ne: currentUserId },
     })
-      .select('name role agentId department isActive status availabilityStatus maxActiveChats currentActiveChats maxConcurrentCalls isAssignable')
+      .select('name role agentId department isActive status availabilityStatus maxActiveChats currentActiveChats maxConcurrentCalls isAssignable avatarUrl')
       .sort({ name: 1 });
 
     return res.json({
@@ -325,7 +366,7 @@ exports.listAgentStatus = async (_req, res) => {
       agentId: { $type: 'string', $ne: '' },
       isActive: true,
     })
-      .select('name role agentId department isActive status availabilityStatus maxConcurrentCalls isAssignable')
+      .select('name role agentId department isActive status availabilityStatus maxConcurrentCalls isAssignable avatarUrl')
       .sort({ name: 1, createdAt: 1 });
 
     const activeCallCounts = await resolveActiveCallCounts(
@@ -390,6 +431,39 @@ exports.updateMyAvailabilityStatus = async (req, res) => {
   } catch (error) {
     console.error('Auth update availability status error:', error);
     return res.status(500).json({ error: 'Failed to update availability status' });
+  }
+};
+
+exports.updateMyAvatar = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const normalizedAvatar = normalizeAvatarDataUrl(req.body?.avatarDataUrl);
+    if (normalizedAvatar.error) {
+      return res.status(400).json({ error: normalizedAvatar.error });
+    }
+
+    req.user.avatarUrl = normalizedAvatar.value;
+    await req.user.save();
+
+    const safeUser = sanitizeUser(req.user);
+
+    if (global.io) {
+      global.io.emit('userAvatarUpdated', {
+        user: safeUser,
+        agentId: req.user.agentId || '',
+        userId: String(req.user._id || ''),
+      });
+    }
+
+    return res.json({
+      user: safeUser,
+    });
+  } catch (error) {
+    console.error('Auth update avatar error:', error);
+    return res.status(500).json({ error: 'Failed to update avatar' });
   }
 };
 
