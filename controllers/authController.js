@@ -180,6 +180,11 @@ const normalizeAvatarDataUrl = (value) => {
 
 const resolveConnectedState = (agentId) => {
   if (!agentId) return false;
+  const socketSet = global.connectedUserSockets?.[agentId];
+  if (socketSet instanceof Set) {
+    return socketSet.size > 0;
+  }
+
   return Boolean(global.connectedUsers?.[agentId]);
 };
 
@@ -191,11 +196,63 @@ const resolvePresenceStatus = (agentId) => {
 
 const resolveEffectiveAvailabilityStatus = (user) => {
   const agentId = user?.agentId || '';
+  const availabilityStatus = normalizeAvailabilityStatus(user?.availabilityStatus || 'online');
+
+  if (availabilityStatus === 'offline') {
+    return 'offline';
+  }
+
   if (!resolveConnectedState(agentId)) {
     return 'offline';
   }
 
-  return normalizeAvailabilityStatus(user?.availabilityStatus || 'online');
+  return availabilityStatus;
+};
+
+const buildUserPresencePayload = ({
+  agentId,
+  availabilityStatus,
+}) => {
+  const normalizedAgentId = String(agentId || '').trim();
+  const normalizedAvailabilityStatus = normalizeAvailabilityStatus(availabilityStatus || 'online');
+  const connected = resolveConnectedState(normalizedAgentId);
+  const connectionStatus = connected ? 'connected' : 'disconnected';
+  const presenceStatus = connected ? 'online' : 'offline';
+  const effectiveStatus = normalizedAvailabilityStatus === 'offline'
+    ? 'offline'
+    : (connected ? normalizedAvailabilityStatus : 'offline');
+
+  return {
+    userId: normalizedAgentId,
+    agentId: normalizedAgentId,
+    connected,
+    connectionStatus,
+    presenceStatus,
+    availabilityStatus: normalizedAvailabilityStatus,
+    effectiveStatus,
+    effectiveAvailabilityStatus: effectiveStatus,
+  };
+};
+
+const emitUserPresenceUpdate = ({
+  agentId,
+  availabilityStatus,
+}) => {
+  if (!global.io || !agentId) {
+    return null;
+  }
+
+  const payload = buildUserPresencePayload({ agentId, availabilityStatus });
+  global.io.emit('userPresenceUpdated', payload);
+  global.io.emit('agentStatus', {
+    userId: payload.userId,
+    status: payload.presenceStatus,
+  });
+  global.io.emit('agentAvailabilityStatus', {
+    userId: payload.userId,
+    availabilityStatus: payload.availabilityStatus,
+  });
+  return payload;
 };
 
 const normalizeNonNegativeInteger = (value, fallback) => {
@@ -348,10 +405,10 @@ exports.listTeammates = async (req, res) => {
     return res.json({
       teammates: teammates.map((user) => ({
         ...sanitizeTeammate(user),
-        availabilityStatus: normalizeAvailabilityStatus(user.availabilityStatus || 'online'),
-        connected: resolveConnectedState(user.agentId || ''),
-        presenceStatus: resolvePresenceStatus(user.agentId || ''),
-        effectiveAvailabilityStatus: resolveEffectiveAvailabilityStatus(user),
+        ...buildUserPresencePayload({
+          agentId: user.agentId || '',
+          availabilityStatus: user.availabilityStatus || 'online',
+        }),
       })),
     });
   } catch (error) {
@@ -375,9 +432,11 @@ exports.listAgentStatus = async (_req, res) => {
 
     const agentStatus = users.map((user) => {
       const agentId = user.agentId || '';
-      const connected = resolveConnectedState(agentId);
       const voiceReady = Boolean(global.agentVoiceReady?.[agentId]);
-      const presenceStatus = resolvePresenceStatus(agentId);
+      const presence = buildUserPresencePayload({
+        agentId,
+        availabilityStatus: user.availabilityStatus || 'online',
+      });
 
       return {
         id: String(user._id),
@@ -388,10 +447,12 @@ exports.listAgentStatus = async (_req, res) => {
         isActive: user.isActive !== false,
         isAssignable: typeof user.isAssignable === 'boolean' ? user.isAssignable : true,
         status: user.status || 'offline',
-        availabilityStatus: normalizeAvailabilityStatus(user.availabilityStatus || 'online'),
-        effectiveAvailabilityStatus: resolveEffectiveAvailabilityStatus(user),
-        connected,
-        presenceStatus,
+        availabilityStatus: presence.availabilityStatus,
+        effectiveAvailabilityStatus: presence.effectiveAvailabilityStatus,
+        effectiveStatus: presence.effectiveStatus,
+        connected: presence.connected,
+        connectionStatus: presence.connectionStatus,
+        presenceStatus: presence.presenceStatus,
         voiceReady,
         activeCallCount: activeCallCounts[agentId] || 0,
         maxConcurrentCalls: Number.isFinite(user.maxConcurrentCalls) ? user.maxConcurrentCalls : 1,
@@ -415,18 +476,20 @@ exports.updateMyAvailabilityStatus = async (req, res) => {
     req.user.availabilityStatus = availabilityStatus;
     await req.user.save();
 
+    let presencePayload = null;
     if (req.user.agentId && global.io) {
-      global.io.emit('agentAvailabilityStatus', {
-        userId: req.user.agentId,
+      presencePayload = emitUserPresenceUpdate({
+        agentId: req.user.agentId,
         availabilityStatus,
       });
     }
 
     return res.json({
       user: sanitizeUser(req.user),
-      effectiveAvailabilityStatus: resolveEffectiveAvailabilityStatus(req.user),
-      connected: resolveConnectedState(req.user.agentId || ''),
-      presenceStatus: resolvePresenceStatus(req.user.agentId || ''),
+      ...(presencePayload || buildUserPresencePayload({
+        agentId: req.user.agentId || '',
+        availabilityStatus,
+      })),
     });
   } catch (error) {
     console.error('Auth update availability status error:', error);
@@ -782,3 +845,9 @@ exports.deleteUser = async (req, res) => {
 };
 
 exports.signToken = signToken;
+exports.normalizeAvailabilityStatus = normalizeAvailabilityStatus;
+exports.resolveConnectedState = resolveConnectedState;
+exports.resolvePresenceStatus = resolvePresenceStatus;
+exports.resolveEffectiveAvailabilityStatus = resolveEffectiveAvailabilityStatus;
+exports.buildUserPresencePayload = buildUserPresencePayload;
+exports.emitUserPresenceUpdate = emitUserPresenceUpdate;

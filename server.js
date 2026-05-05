@@ -14,6 +14,11 @@ const voiceRoutes = require('./routes/voiceRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const numberRoutes = require('./routes/numberRoutes');
 const authRoutes = require('./routes/authRoutes');
+const User = require('./models/User');
+const {
+  emitUserPresenceUpdate,
+  normalizeAvailabilityStatus,
+} = require('./controllers/authController');
 
 const app = express();
 
@@ -111,11 +116,9 @@ io.on('connection', (socket) => {
   console.log('⚡ Connected:', socket.id);
 
   // ✅ REGISTER USER
-  socket.on('registerUser', (payload) => {
+  socket.on('registerUser', async (payload) => {
     const userId = typeof payload === 'string' ? payload : payload?.userId;
-    const status = payload?.status;
     const voiceReady = payload?.voiceReady;
-    const availabilityStatus = payload?.availabilityStatus;
 
     if (!userId) {
       console.log('⚠️ registerUser skipped: missing userId');
@@ -128,20 +131,36 @@ io.on('connection', (socket) => {
 
     connectedUserSockets[userId].add(socket.id);
     users[userId] = socket.id;
-    agentStatus[userId] = status || agentStatus[userId] || 'online';
+    agentStatus[userId] = 'online';
     agentVoiceReady[userId] = typeof voiceReady === 'boolean'
       ? voiceReady
       : Boolean(agentVoiceReady[userId]);
     socket.data.userId = userId;
     socket.data.registeredUserId = userId;
+
+    let availabilityStatus = normalizeAvailabilityStatus(payload?.availabilityStatus || 'online');
+    try {
+      const user = await User.findOne({
+        agentId: userId,
+        isActive: true,
+      }).select('availabilityStatus');
+
+      availabilityStatus = normalizeAvailabilityStatus(
+        user?.availabilityStatus || availabilityStatus
+      );
+    } catch (error) {
+      console.error('Presence register availability lookup failed:', error);
+    }
+
+    socket.data.availabilityStatus = availabilityStatus;
     console.log(
       `✅ Registered ${userId} → ${socket.id} | status=${agentStatus[userId]} | voiceReady=${agentVoiceReady[userId]}`
     );
 
-    io.emit('agentStatus', { userId, status: agentStatus[userId] });
-    if (availabilityStatus) {
-      io.emit('agentAvailabilityStatus', { userId, availabilityStatus });
-    }
+    emitUserPresenceUpdate({
+      agentId: userId,
+      availabilityStatus,
+    });
   });
 
   socket.on('agentStatus', (data) => {
@@ -188,8 +207,32 @@ io.on('connection', (socket) => {
         delete users[disconnectedUserId];
         agentStatus[disconnectedUserId] = 'offline';
         agentVoiceReady[disconnectedUserId] = false;
-        io.emit('agentStatus', { userId: disconnectedUserId, status: 'offline' });
-        console.log(`📴 Agent disconnected ${disconnectedUserId} | voiceReady=false`);
+        const emitPresence = async () => {
+          let availabilityStatus = normalizeAvailabilityStatus(socket.data?.availabilityStatus || 'online');
+
+          try {
+            const user = await User.findOne({
+              agentId: disconnectedUserId,
+              isActive: true,
+            }).select('availabilityStatus');
+
+            availabilityStatus = normalizeAvailabilityStatus(
+              user?.availabilityStatus || availabilityStatus
+            );
+          } catch (error) {
+            console.error('Presence disconnect availability lookup failed:', error);
+          }
+
+          emitUserPresenceUpdate({
+            agentId: disconnectedUserId,
+            availabilityStatus,
+          });
+          console.log(`📴 Agent disconnected ${disconnectedUserId} | voiceReady=false`);
+        };
+
+        emitPresence().catch((error) => {
+          console.error('Presence disconnect emit failed:', error);
+        });
       }
     }
   });
