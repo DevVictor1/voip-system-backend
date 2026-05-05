@@ -579,6 +579,53 @@ const buildGroupCalendarEventPayload = async (event) => {
   };
 };
 
+const validateCalendarEventInput = ({
+  title,
+  startAt,
+  endAt,
+}) => {
+  const normalizedTitle = String(title || '').trim();
+
+  if (!normalizedTitle) {
+    return 'Event title is required';
+  }
+
+  if (!startAt || !endAt) {
+    return 'Start time and end time are required';
+  }
+
+  if (endAt <= startAt) {
+    return 'End time must be after start time';
+  }
+
+  return '';
+};
+
+const emitTeamCalendarUpdate = async ({
+  team,
+  conversationId = '',
+  action = '',
+  event = null,
+  eventId = '',
+}) => {
+  if (!global.io || !team?.slug) {
+    return;
+  }
+
+  const participants = await resolveTeamMembers(team);
+  const payload = {
+    conversationId: conversationId || team.slug,
+    teamId: team.slug,
+    action,
+    eventId: String(eventId || event?._id || ''),
+    event: event ? await buildGroupCalendarEventPayload(event) : null,
+  };
+
+  participants.forEach((participantId) => {
+    emitSocketEventToUser(participantId, 'teamCalendarUpdated', payload);
+  });
+};
+
 const resolveInternalMessageAccess = async ({
   messageId,
   rawUserId,
@@ -1101,7 +1148,7 @@ exports.getTeamCalendarEvents = async (req, res) => {
     }
 
     const events = await GroupCalendarEvent.find({ teamId: team.slug })
-      .sort({ startAt: 1, createdAt: 1 });
+      .sort({ isPinned: -1, pinnedAt: 1, startAt: 1, createdAt: 1 });
     const payload = await Promise.all(events.map((event) => buildGroupCalendarEventPayload(event)));
 
     return res.json({
@@ -1130,12 +1177,9 @@ exports.createTeamCalendarEvent = async (req, res) => {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    if (!title || !startAt || !endAt) {
-      return res.status(400).json({ error: 'Title, start time, and end time are required' });
-    }
-
-    if (endAt <= startAt) {
-      return res.status(400).json({ error: 'End time must be after start time' });
+    const validationError = validateCalendarEventInput({ title, startAt, endAt });
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
 
     const team = await getTeamDocumentByConversationId(conversationId);
@@ -1156,6 +1200,13 @@ exports.createTeamCalendarEvent = async (req, res) => {
       startAt,
       endAt,
       createdBy: userId,
+    });
+
+    await emitTeamCalendarUpdate({
+      team,
+      conversationId,
+      action: 'created',
+      event,
     });
 
     return res.status(201).json(await buildGroupCalendarEventPayload(event));
@@ -1179,12 +1230,9 @@ exports.updateTeamCalendarEvent = async (req, res) => {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    if (!title || !startAt || !endAt) {
-      return res.status(400).json({ error: 'Title, start time, and end time are required' });
-    }
-
-    if (endAt <= startAt) {
-      return res.status(400).json({ error: 'End time must be after start time' });
+    const validationError = validateCalendarEventInput({ title, startAt, endAt });
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
 
     const team = await getTeamDocumentByConversationId(conversationId);
@@ -1212,6 +1260,13 @@ exports.updateTeamCalendarEvent = async (req, res) => {
     event.startAt = startAt;
     event.endAt = endAt;
     await event.save();
+
+    await emitTeamCalendarUpdate({
+      team,
+      conversationId,
+      action: 'updated',
+      event,
+    });
 
     return res.json(await buildGroupCalendarEventPayload(event));
   } catch (error) {
@@ -1252,10 +1307,76 @@ exports.deleteTeamCalendarEvent = async (req, res) => {
 
     await GroupCalendarEvent.deleteOne({ _id: event._id });
 
+    await emitTeamCalendarUpdate({
+      team,
+      conversationId,
+      action: 'deleted',
+      eventId: event._id,
+    });
+
     return res.json({ success: true, eventId: String(event._id) });
   } catch (error) {
     console.error('❌ Team calendar delete error:', error);
     return res.status(500).json({ error: 'Failed to delete group calendar event' });
+  }
+};
+
+exports.toggleTeamCalendarEventPin = async (req, res) => {
+  try {
+    const { conversationId, eventId } = req.params;
+    const userId = await normalizeUserId(req.body?.userId);
+    const role = resolveRole(req.body?.role);
+    const shouldPin = Boolean(req.body?.pinned);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const canAccess = await canAccessTeam(team, userId, role);
+    if (!canAccess) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const event = await GroupCalendarEvent.findOne({ _id: eventId, teamId: team.slug });
+    if (!event) {
+      return res.status(404).json({ error: 'Calendar event not found' });
+    }
+
+    if (!canManageCalendarEvent(event, userId, role)) {
+      return res.status(403).json({ error: 'Only the event creator or an admin can pin this event' });
+    }
+
+    if (shouldPin) {
+      await GroupCalendarEvent.updateMany(
+        { teamId: team.slug, _id: { $ne: event._id }, isPinned: true },
+        { $set: { isPinned: false, pinnedAt: null } }
+      );
+      event.isPinned = true;
+      event.pinnedAt = new Date();
+    } else {
+      event.isPinned = false;
+      event.pinnedAt = null;
+    }
+
+    await event.save();
+
+    await emitTeamCalendarUpdate({
+      team,
+      conversationId,
+      action: shouldPin ? 'pinned' : 'unpinned',
+      event,
+    });
+
+    return res.json(await buildGroupCalendarEventPayload(event));
+  } catch (error) {
+    console.error('❌ Team calendar pin toggle error:', error);
+    return res.status(500).json({ error: 'Failed to update calendar event pin state' });
   }
 };
 

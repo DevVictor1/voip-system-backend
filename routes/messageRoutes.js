@@ -10,6 +10,7 @@ const {
   createTeamCalendarEvent,
   updateTeamCalendarEvent,
   deleteTeamCalendarEvent,
+  toggleTeamCalendarEventPin,
   updateTeamDetails,
   leaveTeamConversation,
   deleteTeamConversation,
@@ -33,6 +34,7 @@ router.get('/team/:conversationId/details', getTeamDetails);
 router.get('/team/:conversationId/calendar', getTeamCalendarEvents);
 router.post('/team/:conversationId/calendar', createTeamCalendarEvent);
 router.put('/team/:conversationId/calendar/:eventId', updateTeamCalendarEvent);
+router.patch('/team/:conversationId/calendar/:eventId/pin', toggleTeamCalendarEventPin);
 router.delete('/team/:conversationId/calendar/:eventId', deleteTeamCalendarEvent);
 router.put('/team/:conversationId/details', updateTeamDetails);
 router.post('/team/:conversationId/leave', leaveTeamConversation);

@@ -32,10 +32,20 @@ const groupCalendarEventSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    isPinned: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    pinnedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
 groupCalendarEventSchema.index({ teamId: 1, startAt: 1, createdAt: 1 });
+groupCalendarEventSchema.index({ teamId: 1, isPinned: 1, pinnedAt: 1, startAt: 1 });
 
 module.exports = mongoose.model('GroupCalendarEvent', groupCalendarEventSchema);
