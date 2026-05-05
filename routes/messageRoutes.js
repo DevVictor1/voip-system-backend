@@ -22,6 +22,7 @@ const {
   getConversations,
    getThread,
    uploadInternalAttachment,
+   downloadInternalAttachment,
    sendMessage,
    markConversationRead,
    editMessage,
@@ -103,6 +104,7 @@ router.delete('/team/:conversationId', deleteTeamConversation);
 router.get('/conversations', getConversations);
 router.get('/thread/:conversationId', getThread);
 router.post('/upload', authenticate, handleInternalAttachmentUpload, uploadInternalAttachment);
+router.get('/message/:messageId/attachment', authenticate, downloadInternalAttachment);
 router.post('/send', sendMessage);
 router.put('/read/:conversationId', markConversationRead);
 router.put('/message/:messageId', editMessage);

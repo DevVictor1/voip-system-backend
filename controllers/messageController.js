@@ -3,6 +3,7 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
 const GroupCalendarEvent = require('../models/GroupCalendarEvent');
+const fs = require('fs');
 const path = require('path');
 const {
   INTERNAL_AGENTS,
@@ -567,6 +568,29 @@ const buildMentionNotificationPreview = (value = '') => {
 const buildInternalAttachmentUrl = (req, fileName) => {
   const baseUrl = `${req.protocol}://${req.get('host')}`;
   return `${baseUrl}${INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX}${fileName}`;
+};
+
+const INTERNAL_ATTACHMENT_ROOT_DIR = path.resolve(process.cwd(), 'uploads', 'internal-chat');
+
+const resolveInternalAttachmentAbsolutePath = (storagePath = '') => {
+  const normalizedPath = String(storagePath || '').trim().replace(/\\/g, '/');
+  if (!normalizedPath.startsWith('internal-chat/')) {
+    return '';
+  }
+
+  const relativePath = normalizedPath.slice('internal-chat/'.length).trim();
+  if (!relativePath) {
+    return '';
+  }
+
+  const resolvedPath = path.resolve(INTERNAL_ATTACHMENT_ROOT_DIR, relativePath);
+  const expectedPrefix = `${INTERNAL_ATTACHMENT_ROOT_DIR}${path.sep}`;
+
+  if (resolvedPath !== INTERNAL_ATTACHMENT_ROOT_DIR && !resolvedPath.startsWith(expectedPrefix)) {
+    return '';
+  }
+
+  return resolvedPath;
 };
 
 const normalizeInternalAttachment = (attachment = null) => {
@@ -1924,6 +1948,63 @@ exports.uploadInternalAttachment = async (req, res) => {
   } catch (error) {
     console.error('Internal attachment upload error:', error);
     return res.status(500).json({ error: 'Upload failed' });
+  }
+};
+
+exports.downloadInternalAttachment = async (req, res) => {
+  try {
+    if (!req.user?.agentId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.user.agentId,
+      rawRole: req.user.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message } = access;
+    const attachment = message?.attachment && typeof message.attachment === 'object'
+      ? message.attachment
+      : null;
+
+    if (!attachment?.storagePath || !attachment?.fileName || !attachment?.fileType) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+
+    const absolutePath = resolveInternalAttachmentAbsolutePath(attachment.storagePath);
+    if (!absolutePath) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+
+    try {
+      await fs.promises.access(absolutePath, fs.constants.R_OK);
+    } catch (error) {
+      return res.status(404).json({ error: 'Attachment file is unavailable' });
+    }
+
+    const shouldDownload = ['1', 'true', 'yes'].includes(
+      String(req.query.download || '').trim().toLowerCase()
+    );
+    const safeFileName = String(attachment.fileName || 'attachment').replace(/[\r\n"]/g, '').trim() || 'attachment';
+
+    res.setHeader('Content-Type', attachment.fileType || 'application/octet-stream');
+    res.setHeader('Content-Length', String(Number(attachment.fileSize || 0) || fs.statSync(absolutePath).size));
+    res.setHeader(
+      'Content-Disposition',
+      `${shouldDownload ? 'attachment' : 'inline'}; filename="${safeFileName}"`
+    );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    return res.sendFile(absolutePath);
+  } catch (error) {
+    console.error('Internal attachment download error:', error);
+    return res.status(500).json({ error: 'Failed to access attachment' });
   }
 };
 
