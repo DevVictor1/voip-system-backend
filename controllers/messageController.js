@@ -3,6 +3,7 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
 const GroupCalendarEvent = require('../models/GroupCalendarEvent');
+const path = require('path');
 const {
   INTERNAL_AGENTS,
   TEAM_CHANNELS,
@@ -15,6 +16,21 @@ const DEFAULT_TEAM_CREATOR = 'system';
 const TEAM_MENTION_PATTERN = /(^|\s)@([A-Za-z0-9._-]+)/g;
 const TEAM_CALENDAR_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Ho_Chi_Minh'];
 const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+const INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX = '/uploads/internal-chat/';
+const INTERNAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ALLOWED_INTERNAL_ATTACHMENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'text/plain',
+  'text/csv',
+]);
 
 const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
@@ -432,9 +448,7 @@ const syncConversationSummary = async (conversationId, type, conversationRecord 
     return null;
   }
 
-  const nextPreview = latestMessage
-    ? (latestMessage.isDeleted ? 'This message was deleted' : (latestMessage.body || ''))
-    : '';
+  const nextPreview = latestMessage ? buildMessagePreview(latestMessage) : '';
   const nextTimestamp = latestMessage?.createdAt || null;
   const currentPreview = conversation.lastMessagePreview || '';
   const currentTimestamp = conversation.lastMessageAt
@@ -548,6 +562,64 @@ const buildMentionNotificationPreview = (value = '') => {
   const trimmed = String(value || '').trim().replace(/\s+/g, ' ');
   if (!trimmed) return '';
   return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
+};
+
+const buildInternalAttachmentUrl = (req, fileName) => {
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  return `${baseUrl}${INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX}${fileName}`;
+};
+
+const normalizeInternalAttachment = (attachment = null) => {
+  if (!attachment || typeof attachment !== 'object') {
+    return null;
+  }
+
+  const fileName = String(attachment.fileName || '').trim();
+  const fileType = String(attachment.fileType || '').trim().toLowerCase();
+  const fileUrl = String(attachment.fileUrl || '').trim();
+  const storagePath = String(attachment.storagePath || '').trim();
+  const fileSize = Number(attachment.fileSize || 0);
+
+  if (!fileName || !fileType || !fileUrl || !storagePath) {
+    return null;
+  }
+
+  if (!ALLOWED_INTERNAL_ATTACHMENT_TYPES.has(fileType)) {
+    return null;
+  }
+
+  if (!Number.isFinite(fileSize) || fileSize <= 0 || fileSize > INTERNAL_ATTACHMENT_MAX_BYTES) {
+    return null;
+  }
+
+  const normalizedPath = storagePath.replace(/\\/g, '/');
+  if (!normalizedPath.startsWith('internal-chat/')) {
+    return null;
+  }
+
+  const normalizedUrlPath = fileUrl.replace(/^https?:\/\/[^/]+/i, '');
+  if (!normalizedUrlPath.startsWith(INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX)) {
+    return null;
+  }
+
+  return {
+    fileName,
+    fileType,
+    fileSize,
+    fileUrl,
+    storagePath: normalizedPath,
+  };
+};
+
+const buildMessagePreview = (message) => {
+  if (!message) return '';
+  if (message.isDeleted) return 'This message was deleted';
+
+  const body = String(message.body || '').trim();
+  if (body) return body;
+
+  const attachmentName = String(message.attachment?.fileName || '').trim();
+  return attachmentName ? `Attachment: ${attachmentName}` : '';
 };
 
 const toValidDate = (value) => {
@@ -1707,7 +1779,7 @@ exports.getConversations = async (req, res) => {
       }
 
       if (!conversation.updatedAt || new Date(message.createdAt) > new Date(conversation.updatedAt)) {
-        conversation.lastMessage = message.body || 'New message';
+        conversation.lastMessage = buildMessagePreview(message) || 'New message';
         conversation.lastMessageSenderName = message.senderName
           || getAgentMeta(message.senderId).name
           || '';
@@ -1822,6 +1894,39 @@ exports.getThread = async (req, res) => {
   }
 };
 
+exports.uploadInternalAttachment = async (req, res) => {
+  try {
+    if (!req.user || !req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const fileType = String(req.file.mimetype || '').trim().toLowerCase();
+    if (!ALLOWED_INTERNAL_ATTACHMENT_TYPES.has(fileType)) {
+      return res.status(400).json({ error: 'Unsupported file type' });
+    }
+
+    if (!Number.isFinite(req.file.size) || req.file.size <= 0 || req.file.size > INTERNAL_ATTACHMENT_MAX_BYTES) {
+      return res.status(400).json({ error: 'File is too large' });
+    }
+
+    const fileName = String(req.file.originalname || req.file.filename || '').trim();
+    const fileUrl = buildInternalAttachmentUrl(req, req.file.filename);
+
+    return res.json({
+      attachment: {
+        fileName,
+        fileType,
+        fileSize: req.file.size,
+        fileUrl,
+        storagePath: path.posix.join('internal-chat', req.file.filename),
+      },
+    });
+  } catch (error) {
+    console.error('Internal attachment upload error:', error);
+    return res.status(500).json({ error: 'Upload failed' });
+  }
+};
+
 exports.sendMessage = async (req, res) => {
   try {
     const {
@@ -1829,18 +1934,20 @@ exports.sendMessage = async (req, res) => {
       conversationId,
       userId: rawUserId,
       body,
+      attachment: rawAttachment,
       forwardedFromMessageId,
       replyTo: rawReplyTo,
     } = req.body || {};
 
     const userId = await normalizeUserId(rawUserId);
     const trimmedBody = String(body || '').trim();
+    const attachment = normalizeInternalAttachment(rawAttachment);
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    if (!conversationId || !trimmedBody || !INTERNAL_TYPES.includes(conversationType)) {
+    if (!conversationId || (!trimmedBody && !attachment) || !INTERNAL_TYPES.includes(conversationType)) {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
@@ -1876,6 +1983,7 @@ exports.sendMessage = async (req, res) => {
         from: userId,
         to: recipientId,
         body: trimmedBody,
+        attachment,
         direction: 'outbound',
         conversationType,
         conversationId: conversation?.conversationId || conversationId,
@@ -1909,6 +2017,7 @@ exports.sendMessage = async (req, res) => {
         from: userId,
         to: team.slug,
         body: trimmedBody,
+        attachment,
         direction: 'outbound',
         conversationType,
         conversationId: teamConversation?.conversationId || team.slug,
@@ -1947,7 +2056,7 @@ exports.sendMessage = async (req, res) => {
         {
           $set: {
             lastMessageAt: saved.createdAt,
-            lastMessagePreview: saved.body || '',
+            lastMessagePreview: buildMessagePreview(saved),
           },
         }
       );

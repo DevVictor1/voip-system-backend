@@ -65,6 +65,34 @@ const messageSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    attachment: {
+      type: new mongoose.Schema(
+        {
+          fileName: {
+            type: String,
+            default: '',
+          },
+          fileType: {
+            type: String,
+            default: '',
+          },
+          fileSize: {
+            type: Number,
+            default: 0,
+          },
+          fileUrl: {
+            type: String,
+            default: '',
+          },
+          storagePath: {
+            type: String,
+            default: '',
+          },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     isDeleted: {
       type: Boolean,
       default: false,

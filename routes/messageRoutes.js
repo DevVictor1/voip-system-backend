@@ -1,4 +1,8 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const { authenticate } = require('../middleware/authMiddleware');
 
 const {
   getTeams,
@@ -17,6 +21,7 @@ const {
   deleteTeamConversation,
   getConversations,
    getThread,
+   uploadInternalAttachment,
    sendMessage,
    markConversationRead,
    editMessage,
@@ -26,6 +31,60 @@ const {
   } = require('../controllers/messageController');
 
 const router = express.Router();
+const INTERNAL_ATTACHMENT_DIR = path.join(process.cwd(), 'uploads', 'internal-chat');
+const ALLOWED_INTERNAL_ATTACHMENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'text/plain',
+  'text/csv',
+]);
+
+const internalAttachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, callback) => {
+      fs.mkdirSync(INTERNAL_ATTACHMENT_DIR, { recursive: true });
+      callback(null, INTERNAL_ATTACHMENT_DIR);
+    },
+    filename: (_req, file, callback) => {
+      const extension = path.extname(file.originalname || '').toLowerCase();
+      const safeExtension = extension.replace(/[^.\w-]/g, '') || '';
+      callback(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${safeExtension}`);
+    },
+  }),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, callback) => {
+    if (!ALLOWED_INTERNAL_ATTACHMENT_TYPES.has(String(file.mimetype || '').trim().toLowerCase())) {
+      callback(new Error('Unsupported file type'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const handleInternalAttachmentUpload = (req, res, next) => {
+  internalAttachmentUpload.single('file')(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(400).json({ error: 'File must be 10 MB or smaller' });
+      return;
+    }
+
+    res.status(400).json({ error: error.message || 'Upload failed' });
+  });
+};
 
 router.get('/teams', getTeams);
 router.get('/conversation/:conversationId', getConversationRecord);
@@ -43,6 +102,7 @@ router.post('/team/:conversationId/leave', leaveTeamConversation);
 router.delete('/team/:conversationId', deleteTeamConversation);
 router.get('/conversations', getConversations);
 router.get('/thread/:conversationId', getThread);
+router.post('/upload', authenticate, handleInternalAttachmentUpload, uploadInternalAttachment);
 router.post('/send', sendMessage);
 router.put('/read/:conversationId', markConversationRead);
 router.put('/message/:messageId', editMessage);
