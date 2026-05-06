@@ -1,5 +1,6 @@
 ﻿const Call = require('../models/Call');
 const Contact = require('../models/Contact');
+const PortingNumber = require('../models/PortingNumber');
 const User = require('../models/User');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
 const {
@@ -9,8 +10,28 @@ const {
 const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answer'];
 const RETRYABLE_DIAL_STATUSES = ['busy', 'failed', 'no-answer', 'canceled'];
 const DEFAULT_DIAL_TIMEOUT_SECONDS = 20;
+const AGENT_CALL_BLOCKED_AVAILABILITY_STATUSES = new Set(['offline', 'busy', 'meeting', 'break']);
 
 const normalizeLang = (lang) => (lang === 'vi' ? 'vi' : 'en');
+const normalizeAvailabilityStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (['online', 'busy', 'meeting', 'break', 'offline'].includes(normalized)) {
+    return normalized;
+  }
+
+  return 'online';
+};
+const ensureAbsoluteHttpsUrl = (value) => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+};
+const buildAbsoluteCallbackUrl = (path) => {
+  const baseUrl = ensureAbsoluteHttpsUrl(process.env.BASE_URL);
+  if (!baseUrl) return '';
+  return `${baseUrl.replace(/\/+$/, '')}${path}`;
+};
 
 const SAY_OPTIONS = {
   en: { language: 'en-US' },
@@ -50,36 +71,111 @@ const buildRetryIvrUrl = ({ lang, digit, callSid }) => {
   return `/api/calls/ivr?${params.toString()}`;
 };
 
-const isAgentAvailable = (agentId) => {
-  if (!agentId) {
-    return false;
-  }
+const stripPhoneFormatting = (value = '') => String(value || '').replace(/[^\d+]/g, '').trim();
+const doPhoneNumbersMatch = (left, right) => {
+  const leftNormalized = stripPhoneFormatting(left);
+  const rightNormalized = stripPhoneFormatting(right);
+  if (!leftNormalized || !rightNormalized) return false;
+  if (leftNormalized === rightNormalized) return true;
 
-  const socketId = global.connectedUsers?.[agentId] || '';
-  const status = global.agentStatus?.[agentId] || 'offline';
-  const voiceReady = Boolean(global.agentVoiceReady?.[agentId]);
-
-  return Boolean(socketId && status === 'online' && voiceReady);
+  const leftDigits = leftNormalized.replace(/\D/g, '');
+  const rightDigits = rightNormalized.replace(/\D/g, '');
+  return Boolean(leftDigits && rightDigits && leftDigits === rightDigits);
 };
 
-const getAgentAvailabilityReason = (agentId) => {
-  if (!agentId) {
-    return 'missing-agent-id';
+const isVoiceCapableNumber = (numberRecord) => {
+  const capabilities = String(numberRecord?.capabilities || '').trim().toLowerCase();
+  return capabilities.includes('voice');
+};
+
+const resolveRequestedCallerId = async (rawCallerId) => {
+  const selectedCallerId = String(rawCallerId || '').trim();
+  const defaultCallerId = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
+
+  if (!selectedCallerId) {
+    return defaultCallerId;
   }
 
-  if (!global.connectedUsers?.[agentId]) {
-    return 'no-socket-registration';
+  if (defaultCallerId && doPhoneNumbersMatch(selectedCallerId, defaultCallerId)) {
+    return defaultCallerId;
   }
 
-  if (global.agentStatus?.[agentId] !== 'online') {
-    return `status-${global.agentStatus?.[agentId] || 'offline'}`;
+  const availableNumbers = await PortingNumber.find({
+    phoneNumber: { $type: 'string', $ne: '' },
+  }).select('phoneNumber capabilities');
+
+  const matchedNumber = availableNumbers.find((numberRecord) => (
+    isVoiceCapableNumber(numberRecord)
+    && doPhoneNumbersMatch(numberRecord.phoneNumber, selectedCallerId)
+  ));
+
+  if (matchedNumber?.phoneNumber) {
+    return matchedNumber.phoneNumber;
   }
 
-  if (!global.agentVoiceReady?.[agentId]) {
-    return 'voice-not-ready';
+  return defaultCallerId;
+};
+
+const resolveAgentRoutingContext = async (agentId, userRecord = null) => {
+  const normalizedAgentId = String(agentId || '').trim();
+
+  if (!normalizedAgentId) {
+    return {
+      agentId: '',
+      user: null,
+      connected: false,
+      status: 'offline',
+      voiceReady: false,
+      availabilityStatus: 'offline',
+      available: false,
+      reason: 'missing-agent-id',
+    };
   }
 
-  return 'available';
+  const user = userRecord || await User.findOne({
+    agentId: normalizedAgentId,
+    isActive: true,
+  }).select('agentId availabilityStatus isActive');
+
+  if (!user?.isActive) {
+    return {
+      agentId: normalizedAgentId,
+      user: user || null,
+      connected: false,
+      status: 'offline',
+      voiceReady: false,
+      availabilityStatus: normalizeAvailabilityStatus(user?.availabilityStatus || 'offline'),
+      available: false,
+      reason: 'inactive-user',
+    };
+  }
+
+  const connected = Boolean(global.connectedUsers?.[normalizedAgentId]);
+  const status = String(global.agentStatus?.[normalizedAgentId] || 'offline').trim().toLowerCase() || 'offline';
+  const voiceReady = Boolean(global.agentVoiceReady?.[normalizedAgentId]);
+  const availabilityStatus = normalizeAvailabilityStatus(user.availabilityStatus || 'online');
+
+  let reason = 'available';
+  if (!connected) {
+    reason = 'no-socket-registration';
+  } else if (status !== 'online') {
+    reason = `status-${status}`;
+  } else if (!voiceReady) {
+    reason = 'voice-not-ready';
+  } else if (AGENT_CALL_BLOCKED_AVAILABILITY_STATUSES.has(availabilityStatus)) {
+    reason = `availability-${availabilityStatus}`;
+  }
+
+  return {
+    agentId: normalizedAgentId,
+    user,
+    connected,
+    status,
+    voiceReady,
+    availabilityStatus,
+    available: reason === 'available',
+    reason,
+  };
 };
 
 const dedupeAgentIds = (agentIds = []) => {
@@ -146,7 +242,7 @@ const resolveEligibleDepartmentUsers = async (department) => {
     isActive: true,
     agentId: { $type: 'string', $ne: '' },
   })
-    .select('name role agentId department isActive maxConcurrentCalls')
+    .select('name role agentId department isActive availabilityStatus maxConcurrentCalls')
     .sort({ name: 1, createdAt: 1 });
 
   const seenAgentIds = new Set();
@@ -192,8 +288,16 @@ const resolveActiveCallCounts = async (agentIds = []) => {
 };
 
 const selectQueueTarget = async (users = [], department = '') => {
-  const availableUsers = users
-    .filter((user) => isAgentAvailable(user?.agentId))
+  const routingContexts = await Promise.all(
+    (users || []).map(async (user) => ({
+      user,
+      routing: await resolveAgentRoutingContext(user?.agentId, user),
+    }))
+  );
+
+  const availableUsers = routingContexts
+    .filter(({ routing }) => routing.available)
+    .map(({ user }) => user)
     .filter((user) => {
       const maxConcurrentCalls = Number.isFinite(user?.maxConcurrentCalls)
         ? user.maxConcurrentCalls
@@ -311,11 +415,22 @@ const buildCandidatePlan = async (routeConfig) => {
   };
 };
 
-const findNextAvailableAgentId = (candidateIds = [], attemptedAgentIds = []) => {
+const findNextAvailableAgentId = async (candidateIds = [], attemptedAgentIds = []) => {
   const attempted = new Set(dedupeAgentIds(attemptedAgentIds));
-  return dedupeAgentIds(candidateIds).find((agentId) => (
-    !attempted.has(agentId) && isAgentAvailable(agentId)
-  )) || '';
+  const uniqueCandidateIds = dedupeAgentIds(candidateIds);
+
+  for (const agentId of uniqueCandidateIds) {
+    if (attempted.has(agentId)) {
+      continue;
+    }
+
+    const routing = await resolveAgentRoutingContext(agentId);
+    if (routing.available) {
+      return agentId;
+    }
+  }
+
+  return '';
 };
 
 const persistRoutingAttempt = async ({
@@ -353,15 +468,20 @@ const dialAgentClient = ({
   digit,
   callSid,
 }) => {
+  const recordingStatusCallback = buildAbsoluteCallbackUrl('/api/calls/recording-status');
   const dial = twiml.dial({
     callerId: process.env.TWILIO_PHONE_NUMBER,
     record: 'record-from-answer-dual',
     timeout: buildDialTimeoutSeconds(),
     action: buildRetryIvrUrl({ lang: currentLang, digit, callSid }),
     method: 'POST',
-    recordingStatusCallback: 'https://voip-system-backend.onrender.com/api/calls/recording-status',
-    recordingStatusCallbackMethod: 'POST',
-    recordingStatusCallbackEvent: 'completed',
+    ...(recordingStatusCallback
+      ? {
+          recordingStatusCallback,
+          recordingStatusCallbackMethod: 'POST',
+          recordingStatusCallbackEvent: 'completed',
+        }
+      : {}),
   });
 
   dial.client(agentId);
@@ -497,6 +617,16 @@ exports.handleIVR = async (req, res) => {
     roundRobinPointer,
     rotatedUsers,
   } = await buildCandidatePlan(routeConfig);
+  const eligibleUserRoutingDetails = await Promise.all(
+    eligibleDepartmentUsers.map(async (user) => ({
+      agentId: user.agentId,
+      reason: (await resolveAgentRoutingContext(user.agentId, user)).reason,
+    }))
+  );
+  const eligibleUserRoutingReasonMap = eligibleUserRoutingDetails.reduce((acc, entry) => {
+    acc[entry.agentId] = entry.reason;
+    return acc;
+  }, {});
 
     console.log(
       '[IVR queue]',
@@ -511,7 +641,8 @@ exports.handleIVR = async (req, res) => {
           role: user.role,
           agentId: user.agentId,
           maxConcurrentCalls: Number.isFinite(user.maxConcurrentCalls) ? user.maxConcurrentCalls : 1,
-          routingReason: getAgentAvailabilityReason(user.agentId),
+          availabilityStatus: normalizeAvailabilityStatus(user.availabilityStatus || 'online'),
+          routingReason: eligibleUserRoutingReasonMap[user.agentId] || 'unknown',
           activeCallCount: activeCallCounts[user.agentId] || 0,
         })),
         availableUsers: availableDepartmentUsers.map((user) => ({
@@ -529,7 +660,15 @@ exports.handleIVR = async (req, res) => {
     let fallbackUsed = false;
 
     if (!agentToDial) {
-      const availableFallbackAgents = fallbackCandidates.filter((agentId) => isAgentAvailable(agentId));
+      const fallbackRoutingDetails = await Promise.all(
+        fallbackCandidates.map(async (agentId) => ({
+          agentId,
+          reason: (await resolveAgentRoutingContext(agentId)).reason,
+        }))
+      );
+      const availableFallbackAgents = fallbackRoutingDetails
+        .filter((entry) => entry.reason === 'available')
+        .map((entry) => entry.agentId);
       agentToDial = availableFallbackAgents[0] || '';
       fallbackUsed = Boolean(agentToDial);
 
@@ -540,10 +679,7 @@ exports.handleIVR = async (req, res) => {
           department: routeConfig.department,
           fallbackAgents: fallbackCandidates,
           availableFallbackAgents,
-          fallbackReasons: fallbackCandidates.map((agentId) => ({
-            agentId,
-            reason: getAgentAvailabilityReason(agentId),
-          })),
+          fallbackReasons: fallbackRoutingDetails,
           selectedTarget: agentToDial || null,
         })
       );
@@ -560,7 +696,7 @@ exports.handleIVR = async (req, res) => {
           department: routeConfig.department,
           departmentReasons: eligibleDepartmentUsers.map((user) => ({
             agentId: user.agentId,
-            reason: getAgentAvailabilityReason(user.agentId),
+            reason: eligibleUserRoutingReasonMap[user.agentId] || 'unknown',
           })),
         })
       );
@@ -599,7 +735,9 @@ exports.handleIVR = async (req, res) => {
         selectedTarget: agentToDial,
         fallbackUsed,
         activeCallCount: activeCallCounts[agentToDial] || 0,
-        routingReason: getAgentAvailabilityReason(agentToDial),
+        routingReason: fallbackUsed
+          ? (await resolveAgentRoutingContext(agentToDial)).reason
+          : (eligibleUserRoutingReasonMap[agentToDial] || 'unknown'),
       })
     );
 
@@ -680,10 +818,10 @@ exports.handleIVR = async (req, res) => {
     const queueCandidates = dedupeAgentIds(parentCall.queueCandidates || []);
     const fallbackCandidates = dedupeAgentIds(parentCall.fallbackCandidates || []);
 
-    const nextQueueAgentId = findNextAvailableAgentId(queueCandidates, attemptedAgentIds);
+    const nextQueueAgentId = await findNextAvailableAgentId(queueCandidates, attemptedAgentIds);
     const nextFallbackAgentId = nextQueueAgentId
       ? ''
-      : findNextAvailableAgentId(fallbackCandidates, attemptedAgentIds);
+      : await findNextAvailableAgentId(fallbackCandidates, attemptedAgentIds);
     const nextAgentId = nextQueueAgentId || nextFallbackAgentId;
     const fallbackUsed = Boolean(!nextQueueAgentId && nextFallbackAgentId);
 
@@ -804,7 +942,10 @@ exports.makeCall = async (req, res) => {
 // ==========================
 exports.handleOutboundCall = async (req, res) => {
   try {
-    const { To } = req.body;
+    const { To, callerId: rawCallerId, CallerId: legacyCallerId } = req.body;
+    const callerId = await resolveRequestedCallerId(rawCallerId || legacyCallerId);
+    const recordingStatusCallback = buildAbsoluteCallbackUrl('/api/calls/recording-status');
+    const statusCallback = buildAbsoluteCallbackUrl('/api/calls/call-status');
 
     console.log('OUTBOUND TWIML TO:', To);
 
@@ -813,15 +954,15 @@ exports.handleOutboundCall = async (req, res) => {
     res.send(`
 <Response>
   <Dial
-    callerId="${process.env.TWILIO_PHONE_NUMBER}"
+    callerId="${callerId || process.env.TWILIO_PHONE_NUMBER}"
     record="record-from-answer"
-    recordingStatusCallback="${process.env.BASE_URL?.trim()}/api/calls/recording-status"
-    recordingStatusCallbackMethod="POST"
+    ${recordingStatusCallback ? `recordingStatusCallback="${recordingStatusCallback}"` : ''}
+    ${recordingStatusCallback ? 'recordingStatusCallbackMethod="POST"' : ''}
   >
     <Number
-      statusCallback="${process.env.BASE_URL?.trim()}/api/calls/call-status"
-      statusCallbackEvent="initiated ringing answered completed"
-      statusCallbackMethod="POST"
+      ${statusCallback ? `statusCallback="${statusCallback}"` : ''}
+      ${statusCallback ? 'statusCallbackEvent="initiated ringing answered completed"' : ''}
+      ${statusCallback ? 'statusCallbackMethod="POST"' : ''}
     >
       ${To}
     </Number>

@@ -9,6 +9,11 @@ const callSchema = new mongoose.Schema(
     status: String,
     duration: String,
     direction: String,
+    parentCallSid: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     assignedAgentId: {
       type: String,
       default: null,
