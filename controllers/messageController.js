@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const MessageThreadComment = require('../models/MessageThreadComment');
 const ConversationNote = require('../models/ConversationNote');
@@ -929,6 +930,10 @@ const resolveInternalMessageAccess = async ({
 
   if (!userId) {
     return { error: { status: 400, body: { error: 'Invalid userId' } } };
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(messageId)) {
+    return { error: { status: 400, body: { error: 'Invalid messageId' } } };
   }
 
   const message = await Message.findById(messageId);
@@ -2276,15 +2281,16 @@ exports.sendMessage = async (req, res) => {
       conversationType,
       conversationId,
       userId: rawUserId,
-      body,
       attachment: rawAttachment,
       forwardedFromMessageId,
       replyTo: rawReplyTo,
     } = req.body || {};
 
     const userId = await normalizeUserId(rawUserId);
-    const normalizedBody = normalizeMessageBody(body);
-    const hasBodyContent = normalizedBody.trim().length > 0;
+    const rawMessageText = req.body?.body ?? req.body?.content ?? req.body?.text ?? '';
+    const normalizedBody = normalizeMessageBody(rawMessageText);
+    const trimmedBody = normalizedBody.trim();
+    const hasBodyContent = trimmedBody.length > 0;
     const attachment = normalizeInternalAttachment(rawAttachment);
 
     if (!userId) {
