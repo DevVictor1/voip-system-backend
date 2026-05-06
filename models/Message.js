@@ -179,6 +179,11 @@ const messageSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    commentCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     forwardedFromMessageId: {
       type: String,
       default: null,

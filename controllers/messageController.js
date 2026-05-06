@@ -1,4 +1,5 @@
 const Message = require('../models/Message');
+const MessageThreadComment = require('../models/MessageThreadComment');
 const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
@@ -478,6 +479,28 @@ const buildFormattedInternalMessage = (message, userId) => ({
   ...message.toObject(),
   direction: buildMessageDirection(message, userId),
 });
+
+const buildThreadCommentPayload = (comment) => ({
+  ...comment.toObject(),
+});
+
+const syncMessageCommentCount = async (messageId) => {
+  const parentMessageId = String(messageId || '').trim();
+  if (!parentMessageId) return null;
+
+  const nextCount = await MessageThreadComment.countDocuments({ parentMessageId });
+  return Message.findByIdAndUpdate(
+    parentMessageId,
+    {
+      $set: {
+        commentCount: nextCount,
+      },
+    },
+    {
+      new: true,
+    }
+  );
+};
 
 const emitInternalMessageMutation = (eventName, message) => {
   if (!global.io || !eventName || !message) {
@@ -2581,5 +2604,111 @@ exports.toggleMessageReaction = async (req, res) => {
   } catch (error) {
     console.error('❌ Internal reaction update error:', error);
     return res.status(500).json({ error: 'Failed to update reaction' });
+  }
+};
+
+exports.getMessageThreadComments = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.query?.userId,
+      rawRole: req.query?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, userId } = access;
+    const comments = await MessageThreadComment.find({
+      parentMessageId: String(message._id || ''),
+    }).sort({ createdAt: 1 });
+
+    const syncedMessage = await syncMessageCommentCount(message._id) || message;
+    const rootMessage = buildFormattedInternalMessage(syncedMessage, userId);
+
+    return res.json({
+      rootMessage,
+      commentCount: Number(rootMessage.commentCount || comments.length || 0),
+      comments: comments.map((comment) => buildThreadCommentPayload(comment)),
+    });
+  } catch (error) {
+    console.error('❌ Message thread fetch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch threaded comments' });
+  }
+};
+
+exports.createMessageThreadComment = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.body?.userId,
+      rawRole: req.body?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, userId } = access;
+    const body = String(req.body?.body || '').trim();
+
+    if (!body) {
+      return res.status(400).json({ error: 'Comment body is required' });
+    }
+
+    if (message.isDeleted) {
+      return res.status(400).json({ error: 'Deleted messages cannot receive comments' });
+    }
+
+    const userRecord = await User.findOne({
+      agentId: userId,
+      isActive: true,
+    }).select('name agentId');
+    const fallbackAgent = getAgentMeta(userId);
+    const senderName = String(
+      userRecord?.name || fallbackAgent?.name || userRecord?.agentId || userId
+    ).trim();
+
+    const savedComment = await MessageThreadComment.create({
+      parentMessageId: String(message._id || ''),
+      conversationId: message.conversationId,
+      conversationType: message.conversationType,
+      participants: message.participants || [],
+      teamId: message.teamId || null,
+      teamName: message.teamName || null,
+      senderId: userId,
+      senderName,
+      body,
+    });
+
+    const updatedParentMessage = await syncMessageCommentCount(message._id);
+    const formattedParentMessage = updatedParentMessage
+      ? buildFormattedInternalMessage(updatedParentMessage, userId)
+      : buildFormattedInternalMessage(message, userId);
+    const commentPayload = buildThreadCommentPayload(savedComment);
+
+    emitInternalMessageMutation('internalMessageUpdated', formattedParentMessage);
+
+    if (global.io) {
+      global.io.emit('messageThreadCommentCreated', {
+        parentMessageId: String(message._id || ''),
+        conversationId: message.conversationId,
+        conversationType: message.conversationType,
+        commentCount: Number(formattedParentMessage.commentCount || 0),
+        comment: commentPayload,
+      });
+    }
+
+    return res.status(201).json({
+      rootMessage: formattedParentMessage,
+      commentCount: Number(formattedParentMessage.commentCount || 0),
+      comment: commentPayload,
+    });
+  } catch (error) {
+    console.error('❌ Message thread create error:', error);
+    return res.status(500).json({ error: 'Failed to create threaded comment' });
   }
 };

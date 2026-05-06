@@ -29,7 +29,9 @@ const {
    softDeleteMessage,
    togglePinMessage,
    toggleMessageReaction,
-  } = require('../controllers/messageController');
+   getMessageThreadComments,
+   createMessageThreadComment,
+   } = require('../controllers/messageController');
 
 const router = express.Router();
 const INTERNAL_ATTACHMENT_DIR = path.join(process.cwd(), 'uploads', 'internal-chat');
@@ -111,5 +113,7 @@ router.put('/message/:messageId', editMessage);
 router.delete('/message/:messageId', softDeleteMessage);
 router.put('/message/:messageId/pin', togglePinMessage);
 router.put('/message/:messageId/reaction', toggleMessageReaction);
+router.get('/message/:messageId/comments', getMessageThreadComments);
+router.post('/message/:messageId/comments', createMessageThreadComment);
 
 module.exports = router;
