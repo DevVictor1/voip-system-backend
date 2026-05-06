@@ -344,6 +344,11 @@ const buildUserPayload = ({
   };
 };
 
+const normalizeFavoriteConversationType = (value) => {
+  const normalized = String(value || '').trim();
+  return normalized === 'team' ? 'team' : normalized === 'internal_dm' ? 'internal_dm' : '';
+};
+
 exports.login = async (req, res) => {
   try {
     if (!getJwtSecret()) {
@@ -527,6 +532,43 @@ exports.updateMyAvatar = async (req, res) => {
   } catch (error) {
     console.error('Auth update avatar error:', error);
     return res.status(500).json({ error: 'Failed to update avatar' });
+  }
+};
+
+exports.toggleMyFavoriteConversation = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const conversationType = normalizeFavoriteConversationType(req.body?.conversationType);
+    const conversationId = String(req.body?.conversationId || '').trim();
+
+    if (!conversationType || !conversationId) {
+      return res.status(400).json({ error: 'conversationType and conversationId are required' });
+    }
+
+    const fieldName = conversationType === 'team'
+      ? 'favoriteTeamChatIds'
+      : 'favoritePersonalChatIds';
+    const existingValues = Array.isArray(req.user[fieldName]) ? req.user[fieldName] : [];
+    const alreadyFavorited = existingValues.includes(conversationId);
+
+    req.user[fieldName] = alreadyFavorited
+      ? existingValues.filter((value) => value !== conversationId)
+      : [...existingValues, conversationId];
+
+    await req.user.save();
+
+    return res.json({
+      user: sanitizeUser(req.user),
+      conversationType,
+      conversationId,
+      isFavorited: !alreadyFavorited,
+    });
+  } catch (error) {
+    console.error('Auth toggle favorite conversation error:', error);
+    return res.status(500).json({ error: 'Failed to update favorites' });
   }
 };
 

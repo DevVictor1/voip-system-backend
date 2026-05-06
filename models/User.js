@@ -82,6 +82,14 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    favoritePersonalChatIds: {
+      type: [String],
+      default: [],
+    },
+    favoriteTeamChatIds: {
+      type: [String],
+      default: [],
+    },
   },
   { timestamps: true }
 );
@@ -122,6 +130,8 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       maxConcurrentCalls: Number.isFinite(this.maxConcurrentCalls) ? this.maxConcurrentCalls : 1,
       avatarUrl: this.avatarUrl || '',
       isAssignable: typeof this.isAssignable === 'boolean' ? this.isAssignable : true,
+      favoritePersonalChatIds: Array.isArray(this.favoritePersonalChatIds) ? this.favoritePersonalChatIds : [],
+      favoriteTeamChatIds: Array.isArray(this.favoriteTeamChatIds) ? this.favoriteTeamChatIds : [],
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
     };

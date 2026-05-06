@@ -6,6 +6,7 @@ const {
   listAgentStatus,
   updateMyAvailabilityStatus,
   updateMyAvatar,
+  toggleMyFavoriteConversation,
   bootstrapUser,
   listUsers,
   createUser,
@@ -22,6 +23,7 @@ router.post('/login', login);
 router.get('/me', authenticate, me);
 router.patch('/me/availability-status', authenticate, updateMyAvailabilityStatus);
 router.patch('/me/avatar', authenticate, updateMyAvatar);
+router.patch('/me/favorites', authenticate, toggleMyFavoriteConversation);
 router.get('/teammates', authenticate, listTeammates);
 router.get('/agent-status', authenticate, requireRole('admin'), listAgentStatus);
 router.post('/bootstrap', bootstrapUser);
