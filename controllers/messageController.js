@@ -707,6 +707,12 @@ const buildMessagePreview = (message) => {
   return attachmentName ? `Attachment: ${attachmentName}` : '';
 };
 
+const normalizeMessageBody = (value = '') => (
+  String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+);
+
 const decodeHtmlEntities = (value = '') => (
   String(value || '')
     .replace(/&amp;/gi, '&')
@@ -2277,14 +2283,15 @@ exports.sendMessage = async (req, res) => {
     } = req.body || {};
 
     const userId = await normalizeUserId(rawUserId);
-    const trimmedBody = String(body || '').trim();
+    const normalizedBody = normalizeMessageBody(body);
+    const hasBodyContent = normalizedBody.trim().length > 0;
     const attachment = normalizeInternalAttachment(rawAttachment);
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    if (!conversationId || (!trimmedBody && !attachment) || !INTERNAL_TYPES.includes(conversationType)) {
+    if (!conversationId || (!hasBodyContent && !attachment) || !INTERNAL_TYPES.includes(conversationType)) {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
@@ -2299,7 +2306,7 @@ exports.sendMessage = async (req, res) => {
     const sanitizedReplyTo = replyTo?.messageId
       ? replyTo
       : null;
-    const linkPreview = attachment ? null : await fetchLinkPreviewMetadata(trimmedBody);
+    const linkPreview = attachment ? null : await fetchLinkPreviewMetadata(normalizedBody);
     let payload;
 
     if (conversationType === 'internal_dm') {
@@ -2320,7 +2327,7 @@ exports.sendMessage = async (req, res) => {
       payload = {
         from: userId,
         to: recipientId,
-        body: trimmedBody,
+        body: normalizedBody,
         attachment,
         direction: 'outbound',
         conversationType,
@@ -2355,7 +2362,7 @@ exports.sendMessage = async (req, res) => {
       payload = {
         from: userId,
         to: team.slug,
-        body: trimmedBody,
+        body: normalizedBody,
         attachment,
         direction: 'outbound',
         conversationType,
@@ -2523,13 +2530,13 @@ exports.editMessage = async (req, res) => {
     }
 
     const { message, isSender, userId } = access;
-    const nextBody = String(req.body?.body || '').trim();
+    const nextBody = normalizeMessageBody(req.body?.body);
 
     if (!isSender) {
       return res.status(403).json({ error: 'Only the sender can edit this message' });
     }
 
-    if (!nextBody) {
+    if (!nextBody.trim()) {
       return res.status(400).json({ error: 'Message body is required' });
     }
 
