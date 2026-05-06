@@ -1,5 +1,6 @@
 const Message = require('../models/Message');
 const MessageThreadComment = require('../models/MessageThreadComment');
+const ConversationNote = require('../models/ConversationNote');
 const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
@@ -530,6 +531,37 @@ const emitSocketEventToUser = (userId, eventName, payload) => {
   }
 };
 
+const emitConversationNoteEvent = ({
+  participants = [],
+  eventName = '',
+  payload = null,
+}) => {
+  if (!eventName || !payload) {
+    return;
+  }
+
+  const uniqueParticipants = [...new Set(
+    (participants || [])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+
+  if (uniqueParticipants.length === 0) {
+    if (global.io) {
+      global.io.emit(eventName, payload);
+    }
+    return;
+  }
+
+  uniqueParticipants.forEach((participantId) => {
+    emitSocketEventToUser(participantId, eventName, payload);
+  });
+};
+
+const buildConversationNotePayload = (note) => ({
+  ...(typeof note?.toObject === 'function' ? note.toObject() : { ...(note || {}) }),
+});
+
 const extractMentionHandles = (value = '') => {
   const safeValue = String(value || '');
   const handles = [];
@@ -916,6 +948,80 @@ const resolveInternalMessageAccess = async ({
     message,
     isSender,
     canDeleteAsAdmin,
+  };
+};
+
+const resolveInternalConversationAccess = async ({
+  conversationId,
+  conversationType,
+  rawUserId,
+  rawRole,
+}) => {
+  const userId = await normalizeUserId(rawUserId);
+  const role = resolveRole(rawRole);
+  const normalizedConversationId = String(conversationId || '').trim();
+  const normalizedConversationType = String(conversationType || '').trim();
+
+  if (!userId) {
+    return { error: { status: 400, body: { error: 'Invalid userId' } } };
+  }
+
+  if (!normalizedConversationId || !INTERNAL_TYPES.includes(normalizedConversationType)) {
+    return { error: { status: 400, body: { error: 'Invalid conversation' } } };
+  }
+
+  if (normalizedConversationType === 'internal_dm') {
+    const participants = parseLegacyDmConversationId(normalizedConversationId);
+    const conversationRecord = await ensureDmConversationRecord({
+      conversationId: normalizedConversationId,
+      participants,
+      currentUserId: userId,
+      createdBy: participants[0] || userId,
+    });
+
+    if (!conversationRecord) {
+      return { error: { status: 404, body: { error: 'Conversation not found' } } };
+    }
+
+    if (!isConversationVisible({
+      conversationType: 'internal_dm',
+      participants: conversationRecord.participants || participants,
+    }, userId, role)) {
+      return { error: { status: 403, body: { error: 'Not allowed' } } };
+    }
+
+    return {
+      userId,
+      role,
+      conversationId: conversationRecord.conversationId || normalizedConversationId,
+      conversationType: 'internal_dm',
+      participants: conversationRecord.participants || participants,
+      conversationRecord,
+      team: null,
+    };
+  }
+
+  const team = await getTeamDocumentByConversationId(normalizedConversationId);
+  if (!team) {
+    return { error: { status: 404, body: { error: 'Conversation not found' } } };
+  }
+
+  const canAccess = await canAccessTeam(team, userId, role);
+  if (!canAccess) {
+    return { error: { status: 403, body: { error: 'Not allowed' } } };
+  }
+
+  const conversationRecord = await ensureTeamConversation(team);
+  const participants = await resolveTeamMembers(team);
+
+  return {
+    userId,
+    role,
+    conversationId: conversationRecord?.conversationId || team.slug || normalizedConversationId,
+    conversationType: 'team',
+    participants,
+    conversationRecord,
+    team,
   };
 };
 
@@ -2604,6 +2710,188 @@ exports.toggleMessageReaction = async (req, res) => {
   } catch (error) {
     console.error('❌ Internal reaction update error:', error);
     return res.status(500).json({ error: 'Failed to update reaction' });
+  }
+};
+
+exports.getConversationNotes = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const access = await resolveInternalConversationAccess({
+      conversationId,
+      conversationType: req.query?.conversationType,
+      rawUserId: req.query?.userId,
+      rawRole: req.query?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const notes = await ConversationNote.find({
+      conversationId: access.conversationId,
+      conversationType: access.conversationType,
+    }).sort({ updatedAt: -1, createdAt: -1 });
+
+    return res.json({
+      notes: notes.map((note) => buildConversationNotePayload(note)),
+    });
+  } catch (error) {
+    console.error('Conversation notes fetch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch notes' });
+  }
+};
+
+exports.createConversationNote = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const access = await resolveInternalConversationAccess({
+      conversationId,
+      conversationType: req.body?.conversationType,
+      rawUserId: req.body?.userId,
+      rawRole: req.body?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const body = String(req.body?.body || '').trim();
+    if (!body) {
+      return res.status(400).json({ error: 'Note body is required' });
+    }
+
+    const userRecord = await User.findOne({
+      agentId: access.userId,
+      isActive: true,
+    }).select('name agentId');
+    const fallbackAgent = getAgentMeta(access.userId);
+    const authorName = String(
+      userRecord?.name || fallbackAgent?.name || userRecord?.agentId || access.userId
+    ).trim();
+
+    const note = await ConversationNote.create({
+      conversationId: access.conversationId,
+      conversationType: access.conversationType,
+      authorId: access.userId,
+      authorName,
+      body,
+    });
+
+    const payload = {
+      conversationId: access.conversationId,
+      conversationType: access.conversationType,
+      note: buildConversationNotePayload(note),
+    };
+
+    emitConversationNoteEvent({
+      participants: access.participants,
+      eventName: 'conversationNoteCreated',
+      payload,
+    });
+
+    return res.status(201).json(payload);
+  } catch (error) {
+    console.error('Conversation note create error:', error);
+    return res.status(500).json({ error: 'Failed to create note' });
+  }
+};
+
+exports.updateConversationNote = async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    const note = await ConversationNote.findById(noteId);
+
+    if (!note) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const access = await resolveInternalConversationAccess({
+      conversationId: note.conversationId,
+      conversationType: note.conversationType,
+      rawUserId: req.body?.userId,
+      rawRole: req.body?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const canManage = access.role === 'admin' || String(note.authorId || '') === access.userId;
+    if (!canManage) {
+      return res.status(403).json({ error: 'Only the note author can edit this note' });
+    }
+
+    const body = String(req.body?.body || '').trim();
+    if (!body) {
+      return res.status(400).json({ error: 'Note body is required' });
+    }
+
+    note.body = body;
+    await note.save();
+
+    const payload = {
+      conversationId: note.conversationId,
+      conversationType: note.conversationType,
+      note: buildConversationNotePayload(note),
+    };
+
+    emitConversationNoteEvent({
+      participants: access.participants,
+      eventName: 'conversationNoteUpdated',
+      payload,
+    });
+
+    return res.json(payload);
+  } catch (error) {
+    console.error('Conversation note update error:', error);
+    return res.status(500).json({ error: 'Failed to update note' });
+  }
+};
+
+exports.deleteConversationNote = async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    const note = await ConversationNote.findById(noteId);
+
+    if (!note) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const access = await resolveInternalConversationAccess({
+      conversationId: note.conversationId,
+      conversationType: note.conversationType,
+      rawUserId: req.body?.userId || req.query?.userId,
+      rawRole: req.body?.role || req.query?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const canManage = access.role === 'admin' || String(note.authorId || '') === access.userId;
+    if (!canManage) {
+      return res.status(403).json({ error: 'Only the note author can delete this note' });
+    }
+
+    const deletedNoteId = String(note._id || '');
+    await note.deleteOne();
+
+    const payload = {
+      conversationId: note.conversationId,
+      conversationType: note.conversationType,
+      noteId: deletedNoteId,
+    };
+
+    emitConversationNoteEvent({
+      participants: access.participants,
+      eventName: 'conversationNoteDeleted',
+      payload,
+    });
+
+    return res.json(payload);
+  } catch (error) {
+    console.error('Conversation note delete error:', error);
+    return res.status(500).json({ error: 'Failed to delete note' });
   }
 };
 

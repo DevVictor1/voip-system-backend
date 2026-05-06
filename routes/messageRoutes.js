@@ -29,6 +29,10 @@ const {
    softDeleteMessage,
    togglePinMessage,
    toggleMessageReaction,
+   getConversationNotes,
+   createConversationNote,
+   updateConversationNote,
+   deleteConversationNote,
    getMessageThreadComments,
    createMessageThreadComment,
    } = require('../controllers/messageController');
@@ -113,6 +117,10 @@ router.put('/message/:messageId', editMessage);
 router.delete('/message/:messageId', softDeleteMessage);
 router.put('/message/:messageId/pin', togglePinMessage);
 router.put('/message/:messageId/reaction', toggleMessageReaction);
+router.get('/conversation/:conversationId/notes', getConversationNotes);
+router.post('/conversation/:conversationId/notes', createConversationNote);
+router.put('/conversation/:conversationId/notes/:noteId', updateConversationNote);
+router.delete('/conversation/:conversationId/notes/:noteId', deleteConversationNote);
 router.get('/message/:messageId/comments', getMessageThreadComments);
 router.post('/message/:messageId/comments', createMessageThreadComment);
 
