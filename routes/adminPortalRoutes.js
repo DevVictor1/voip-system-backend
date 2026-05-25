@@ -8,6 +8,7 @@ const {
   getClientAccount,
   createClientAccount,
   updateClientAccount,
+  updateClientAccountStatus,
 } = require('../controllers/adminPortalController');
 const { authenticate, requireRole } = require('../middleware/authMiddleware');
 
@@ -24,5 +25,6 @@ router.get('/client-accounts', listClientAccounts);
 router.get('/client-accounts/:id', getClientAccount);
 router.post('/client-accounts', createClientAccount);
 router.put('/client-accounts/:id', updateClientAccount);
+router.patch('/client-accounts/:id/status', updateClientAccountStatus);
 
 module.exports = router;

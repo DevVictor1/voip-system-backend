@@ -354,6 +354,39 @@ exports.updateClientAccount = async (req, res) => {
   }
 };
 
+exports.updateClientAccountStatus = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.id);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client account not found' });
+    }
+
+    const nextStatus = normalizeStatus(
+      req.body?.accountStatus,
+      CLIENT_ACCOUNT_STATUSES,
+      ''
+    );
+
+    if (!nextStatus) {
+      return res.status(400).json({ error: 'accountStatus is required' });
+    }
+
+    clientAccount.accountStatus = nextStatus;
+    await clientAccount.save();
+
+    const populatedAccount = await ClientAccount.findById(clientAccount._id)
+      .populate('resellerId', 'name companyName status')
+      .populate('adminUserId', 'name email role');
+
+    return res.json({
+      clientAccount: sanitizeClientAccount(populatedAccount),
+    });
+  } catch (error) {
+    console.error('Admin portal update client account status error:', error);
+    return res.status(500).json({ error: 'Failed to update client account status' });
+  }
+};
+
 exports.getResellerOverview = async (_req, res) => {
   try {
     const [resellerCount, clientAccountCount] = await Promise.all([
