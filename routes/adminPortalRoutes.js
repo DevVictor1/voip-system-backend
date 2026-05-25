@@ -4,6 +4,8 @@ const {
   getReseller,
   createReseller,
   updateReseller,
+  addResellerNote,
+  deleteResellerNote,
   listClientAccounts,
   getClientAccount,
   createClientAccount,
@@ -22,6 +24,8 @@ router.get('/resellers', listResellers);
 router.get('/resellers/:id', getReseller);
 router.post('/resellers', createReseller);
 router.put('/resellers/:id', updateReseller);
+router.post('/resellers/:id/notes', addResellerNote);
+router.delete('/resellers/:id/notes/:noteId', deleteResellerNote);
 
 router.get('/client-accounts', listClientAccounts);
 router.get('/client-accounts/:id', getClientAccount);

@@ -7,6 +7,7 @@ const RESELLER_STATUSES = new Set(['active', 'inactive', 'pending']);
 const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
 const CLIENT_NUMBER_TYPES = new Set(['voice', 'sms', 'voice+sms']);
 const CLIENT_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive']);
+const RESELLER_ACTIVITY_LIMIT = 100;
 const CLIENT_ACCOUNT_ACTIVITY_LIMIT = 100;
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
@@ -184,6 +185,19 @@ const appendActivityEntries = (clientAccount, entries = []) => {
   clientAccount.activityLog = [...currentEntries, ...normalizedEntries].slice(-CLIENT_ACCOUNT_ACTIVITY_LIMIT);
 };
 
+const appendResellerActivityEntries = (reseller, entries = []) => {
+  const normalizedEntries = entries.filter(Boolean);
+  if (normalizedEntries.length === 0) {
+    return;
+  }
+
+  const currentEntries = Array.isArray(reseller.activityLog)
+    ? reseller.activityLog
+    : [];
+
+  reseller.activityLog = [...currentEntries, ...normalizedEntries].slice(-RESELLER_ACTIVITY_LIMIT);
+};
+
 const buildComparableAssignedNumberRecord = (record = {}) => ({
   phoneNumber: normalizeTrimmedText(record?.phoneNumber),
   label: normalizeTrimmedText(record?.label),
@@ -230,6 +244,24 @@ const sanitizeReseller = (reseller) => ({
   contactPhone: reseller.contactPhone || '',
   status: reseller.status || 'pending',
   notes: reseller.notes || '',
+  adminNotes: Array.isArray(reseller.adminNotes)
+    ? reseller.adminNotes.map((note) => ({
+        id: note?._id ? String(note._id) : '',
+        text: note?.text || '',
+        authorId: note?.authorId ? String(note.authorId) : null,
+        authorName: note?.authorName || '',
+        createdAt: note?.createdAt || null,
+      }))
+    : [],
+  activityLog: Array.isArray(reseller.activityLog)
+    ? reseller.activityLog.map((entry) => ({
+        action: entry?.action || '',
+        description: entry?.description || '',
+        actorId: entry?.actorId ? String(entry.actorId) : null,
+        actorName: entry?.actorName || '',
+        createdAt: entry?.createdAt || null,
+      }))
+    : [],
   createdAt: reseller.createdAt,
   updatedAt: reseller.updatedAt,
 });
@@ -418,7 +450,12 @@ exports.createReseller = async (req, res) => {
       return res.status(400).json({ error: 'name and companyName are required' });
     }
 
-    const reseller = await Reseller.create(payload);
+    const reseller = await Reseller.create({
+      ...payload,
+      activityLog: [
+        buildActivityEntry('reseller_created', 'Reseller created in Admin Portal', req.user),
+      ],
+    });
     return res.status(201).json({
       reseller: sanitizeReseller(reseller),
     });
@@ -442,12 +479,43 @@ exports.updateReseller = async (req, res) => {
       return res.status(400).json({ error: 'name and companyName are required' });
     }
 
+    const nextContactEmail = normalizeTrimmedText(req.body?.contactEmail ?? reseller.contactEmail).toLowerCase();
+    const nextContactPhone = normalizeTrimmedText(req.body?.contactPhone ?? reseller.contactPhone);
+    const nextStatus = normalizeStatus(req.body?.status ?? reseller.status, RESELLER_STATUSES, reseller.status || 'pending');
+    const nextNotes = normalizeTrimmedText(req.body?.notes ?? reseller.notes);
+    const nextActivityEntries = [];
+
+    if (String(reseller.status || '') !== String(nextStatus || '')) {
+      nextActivityEntries.push(buildActivityEntry(
+        'status_changed',
+        `Reseller status changed from ${reseller.status || 'unknown'} to ${nextStatus}`,
+        req.user
+      ));
+    }
+
+    const detailsChanged = (
+      String(reseller.name || '') !== String(nextName || '')
+      || String(reseller.companyName || '') !== String(nextCompanyName || '')
+      || String(reseller.contactEmail || '') !== String(nextContactEmail || '')
+      || String(reseller.contactPhone || '') !== String(nextContactPhone || '')
+      || String(reseller.notes || '') !== String(nextNotes || '')
+    );
+
+    if (detailsChanged) {
+      nextActivityEntries.push(buildActivityEntry(
+        'details_updated',
+        'Reseller metadata details were updated',
+        req.user
+      ));
+    }
+
     reseller.name = nextName;
     reseller.companyName = nextCompanyName;
-    reseller.contactEmail = normalizeTrimmedText(req.body?.contactEmail ?? reseller.contactEmail).toLowerCase();
-    reseller.contactPhone = normalizeTrimmedText(req.body?.contactPhone ?? reseller.contactPhone);
-    reseller.status = normalizeStatus(req.body?.status ?? reseller.status, RESELLER_STATUSES, reseller.status || 'pending');
-    reseller.notes = normalizeTrimmedText(req.body?.notes ?? reseller.notes);
+    reseller.contactEmail = nextContactEmail;
+    reseller.contactPhone = nextContactPhone;
+    reseller.status = nextStatus;
+    reseller.notes = nextNotes;
+    appendResellerActivityEntries(reseller, nextActivityEntries);
 
     await reseller.save();
 
@@ -457,6 +525,73 @@ exports.updateReseller = async (req, res) => {
   } catch (error) {
     console.error('Admin portal update reseller error:', error);
     return res.status(500).json({ error: 'Failed to update reseller' });
+  }
+};
+
+exports.addResellerNote = async (req, res) => {
+  try {
+    const reseller = await Reseller.findById(req.params.id);
+    if (!reseller) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    const text = normalizeAdminNoteText(req.body?.text);
+    if (!text) {
+      return res.status(400).json({ error: 'text is required' });
+    }
+
+    reseller.adminNotes = [
+      ...(Array.isArray(reseller.adminNotes) ? reseller.adminNotes : []),
+      {
+        text,
+        authorId: req.user?._id || null,
+        authorName: normalizeTrimmedText(req.user?.name || req.user?.email || 'Admin User'),
+        createdAt: new Date(),
+      },
+    ];
+    appendResellerActivityEntries(reseller, [
+      buildActivityEntry('note_added', 'An internal reseller note was added', req.user),
+    ]);
+
+    await reseller.save();
+
+    return res.status(201).json({
+      reseller: sanitizeReseller(reseller),
+    });
+  } catch (error) {
+    console.error('Admin portal add reseller note error:', error);
+    return res.status(500).json({ error: 'Failed to add reseller note' });
+  }
+};
+
+exports.deleteResellerNote = async (req, res) => {
+  try {
+    const reseller = await Reseller.findById(req.params.id);
+    if (!reseller) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    const noteId = normalizeTrimmedText(req.params.noteId);
+    const currentNotes = Array.isArray(reseller.adminNotes) ? reseller.adminNotes : [];
+    const noteExists = currentNotes.some((note) => String(note?._id || '') === noteId);
+
+    if (!noteExists) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    reseller.adminNotes = currentNotes.filter((note) => String(note?._id || '') !== noteId);
+    appendResellerActivityEntries(reseller, [
+      buildActivityEntry('note_deleted', 'An internal reseller note was deleted', req.user),
+    ]);
+
+    await reseller.save();
+
+    return res.json({
+      reseller: sanitizeReseller(reseller),
+    });
+  } catch (error) {
+    console.error('Admin portal delete reseller note error:', error);
+    return res.status(500).json({ error: 'Failed to delete reseller note' });
   }
 };
 
