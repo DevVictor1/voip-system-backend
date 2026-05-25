@@ -47,6 +47,60 @@ const clientNumberMetadataSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const clientAccountAdminNoteSchema = new mongoose.Schema(
+  {
+    text: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    authorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    authorName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  }
+);
+
+const clientAccountActivityLogSchema = new mongoose.Schema(
+  {
+    action: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    actorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    actorName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false }
+);
+
 const clientAccountSchema = new mongoose.Schema(
   {
     resellerId: {
@@ -91,6 +145,14 @@ const clientAccountSchema = new mongoose.Schema(
     assignedUserIds: {
       type: [mongoose.Schema.Types.ObjectId],
       ref: 'User',
+      default: [],
+    },
+    adminNotes: {
+      type: [clientAccountAdminNoteSchema],
+      default: [],
+    },
+    activityLog: {
+      type: [clientAccountActivityLogSchema],
       default: [],
     },
   },

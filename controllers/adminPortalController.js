@@ -7,6 +7,7 @@ const RESELLER_STATUSES = new Set(['active', 'inactive', 'pending']);
 const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
 const CLIENT_NUMBER_TYPES = new Set(['voice', 'sms', 'voice+sms']);
 const CLIENT_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive']);
+const CLIENT_ACCOUNT_ACTIVITY_LIMIT = 100;
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -156,6 +157,71 @@ const buildStructuredAssignedNumbers = (account) => {
   return [...normalizedRecords, ...legacyRecords];
 };
 
+const normalizeAdminNoteText = (value) => normalizeTrimmedText(value);
+
+const getActorMetadata = (user) => ({
+  actorId: user?._id || null,
+  actorName: normalizeTrimmedText(user?.name || user?.email || 'Admin User'),
+});
+
+const buildActivityEntry = (action, description, user) => ({
+  action,
+  description,
+  ...getActorMetadata(user),
+  createdAt: new Date(),
+});
+
+const appendActivityEntries = (clientAccount, entries = []) => {
+  const normalizedEntries = entries.filter(Boolean);
+  if (normalizedEntries.length === 0) {
+    return;
+  }
+
+  const currentEntries = Array.isArray(clientAccount.activityLog)
+    ? clientAccount.activityLog
+    : [];
+
+  clientAccount.activityLog = [...currentEntries, ...normalizedEntries].slice(-CLIENT_ACCOUNT_ACTIVITY_LIMIT);
+};
+
+const buildComparableAssignedNumberRecord = (record = {}) => ({
+  phoneNumber: normalizeTrimmedText(record?.phoneNumber),
+  label: normalizeTrimmedText(record?.label),
+  type: normalizeStatus(record?.type, CLIENT_NUMBER_TYPES, 'voice'),
+  status: normalizeStatus(record?.status, CLIENT_NUMBER_STATUSES, 'pending'),
+  assignedUserId: record?.assignedUserId?._id
+    ? String(record.assignedUserId._id)
+    : (record?.assignedUserId ? String(record.assignedUserId) : ''),
+  assignedDepartment: normalizeTrimmedText(record?.assignedDepartment),
+  notes: normalizeTrimmedText(record?.notes),
+});
+
+const haveUserIdsChanged = (previousValues = [], nextValues = []) => {
+  const previous = [...new Set(
+    previousValues.map((value) => (
+      value?._id ? String(value._id) : String(value || '').trim()
+    )).filter(Boolean)
+  )].sort();
+  const next = [...new Set(
+    nextValues.map((value) => String(value || '').trim()).filter(Boolean)
+  )].sort();
+
+  return previous.length !== next.length || previous.some((value, index) => value !== next[index]);
+};
+
+const haveAssignedNumberRecordsChanged = (previousValues = [], nextValues = []) => {
+  const previous = previousValues
+    .map((record) => JSON.stringify(buildComparableAssignedNumberRecord(record)))
+    .filter(Boolean)
+    .sort();
+  const next = nextValues
+    .map((record) => JSON.stringify(buildComparableAssignedNumberRecord(record)))
+    .filter(Boolean)
+    .sort();
+
+  return previous.length !== next.length || previous.some((value, index) => value !== next[index]);
+};
+
 const sanitizeReseller = (reseller) => ({
   id: String(reseller._id),
   name: reseller.name || '',
@@ -212,6 +278,24 @@ const sanitizeClientAccount = (account) => ({
           email: user.email || '',
           role: user.role || '',
         }))
+    : [],
+  adminNotes: Array.isArray(account.adminNotes)
+    ? account.adminNotes.map((note) => ({
+        id: note?._id ? String(note._id) : '',
+        text: note?.text || '',
+        authorId: note?.authorId ? String(note.authorId) : null,
+        authorName: note?.authorName || '',
+        createdAt: note?.createdAt || null,
+      }))
+    : [],
+  activityLog: Array.isArray(account.activityLog)
+    ? account.activityLog.map((entry) => ({
+        action: entry?.action || '',
+        description: entry?.description || '',
+        actorId: entry?.actorId ? String(entry.actorId) : null,
+        actorName: entry?.actorName || '',
+        createdAt: entry?.createdAt || null,
+      }))
     : [],
   createdAt: account.createdAt,
   updatedAt: account.updatedAt,
@@ -466,6 +550,9 @@ exports.createClientAccount = async (req, res) => {
       assignedNumberRecords: assignedNumberRecordsInput,
       adminUserId: userLookup.user?._id || null,
       assignedUserIds: assignedUsersLookup.userIds || [],
+      activityLog: [
+        buildActivityEntry('account_created', 'Client account created in Admin Portal', req.user),
+      ],
     });
 
     const populatedAccount = await ClientAccount.findById(clientAccount._id)
@@ -535,23 +622,53 @@ exports.updateClientAccount = async (req, res) => {
       return res.status(400).json({ error: 'companyName is required' });
     }
 
-    clientAccount.resellerId = resellerLookup.reseller?._id || null;
-    clientAccount.companyName = companyName;
-    clientAccount.accountStatus = normalizeStatus(
+    const nextStatus = normalizeStatus(
       req.body?.accountStatus ?? clientAccount.accountStatus,
       CLIENT_ACCOUNT_STATUSES,
       clientAccount.accountStatus || 'pending'
     );
-    clientAccount.plan = normalizeTrimmedText(req.body?.plan ?? clientAccount.plan);
-    clientAccount.seatLimit = normalizeNonNegativeInteger(req.body?.seatLimit ?? clientAccount.seatLimit, 0);
-    clientAccount.assignedNumbers = assignedNumberRecordsInput.length > 0
+    const nextAssignedNumbers = assignedNumberRecordsInput.length > 0
       ? assignedNumberRecordsInput.map((record) => record.phoneNumber)
       : normalizeAssignedNumbers(
           req.body?.assignedNumbers !== undefined ? req.body?.assignedNumbers : clientAccount.assignedNumbers
         );
+
+    const nextActivityEntries = [];
+
+    if (String(clientAccount.accountStatus || '') !== String(nextStatus || '')) {
+      nextActivityEntries.push(buildActivityEntry(
+        'status_changed',
+        `Account status changed from ${clientAccount.accountStatus || 'unknown'} to ${nextStatus}`,
+        req.user
+      ));
+    }
+
+    if (haveUserIdsChanged(clientAccount.assignedUserIds, assignedUsersLookup.userIds || [])) {
+      nextActivityEntries.push(buildActivityEntry(
+        'assigned_users_changed',
+        'Client user seat assignments were updated',
+        req.user
+      ));
+    }
+
+    if (haveAssignedNumberRecordsChanged(clientAccount.assignedNumberRecords, assignedNumberRecordsInput)) {
+      nextActivityEntries.push(buildActivityEntry(
+        'number_metadata_changed',
+        'Client number metadata was updated',
+        req.user
+      ));
+    }
+
+    clientAccount.resellerId = resellerLookup.reseller?._id || null;
+    clientAccount.companyName = companyName;
+    clientAccount.accountStatus = nextStatus;
+    clientAccount.plan = normalizeTrimmedText(req.body?.plan ?? clientAccount.plan);
+    clientAccount.seatLimit = normalizeNonNegativeInteger(req.body?.seatLimit ?? clientAccount.seatLimit, 0);
+    clientAccount.assignedNumbers = nextAssignedNumbers;
     clientAccount.assignedNumberRecords = assignedNumberRecordsInput;
     clientAccount.adminUserId = userLookup.user?._id || null;
     clientAccount.assignedUserIds = assignedUsersLookup.userIds || [];
+    appendActivityEntries(clientAccount, nextActivityEntries);
 
     await clientAccount.save();
 
@@ -587,13 +704,24 @@ exports.updateClientAccountStatus = async (req, res) => {
       return res.status(400).json({ error: 'accountStatus is required' });
     }
 
+    const previousStatus = clientAccount.accountStatus;
     clientAccount.accountStatus = nextStatus;
+    if (String(previousStatus || '') !== String(nextStatus || '')) {
+      appendActivityEntries(clientAccount, [
+        buildActivityEntry(
+          'status_changed',
+          `Account status changed from ${previousStatus || 'unknown'} to ${nextStatus}`,
+          req.user
+        ),
+      ]);
+    }
     await clientAccount.save();
 
     const populatedAccount = await ClientAccount.findById(clientAccount._id)
       .populate('resellerId', 'name companyName status')
       .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role');
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role');
 
     return res.json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -622,5 +750,83 @@ exports.getResellerOverview = async (_req, res) => {
   } catch (error) {
     console.error('Reseller overview error:', error);
     return res.status(500).json({ error: 'Failed to fetch reseller overview' });
+  }
+};
+
+exports.addClientAccountNote = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.id);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client account not found' });
+    }
+
+    const text = normalizeAdminNoteText(req.body?.text);
+    if (!text) {
+      return res.status(400).json({ error: 'text is required' });
+    }
+
+    const author = {
+      text,
+      authorId: req.user?._id || null,
+      authorName: normalizeTrimmedText(req.user?.name || req.user?.email || 'Admin User'),
+      createdAt: new Date(),
+    };
+
+    clientAccount.adminNotes = [...(Array.isArray(clientAccount.adminNotes) ? clientAccount.adminNotes : []), author];
+    appendActivityEntries(clientAccount, [
+      buildActivityEntry('note_added', 'An internal admin note was added', req.user),
+    ]);
+
+    await clientAccount.save();
+
+    const populatedAccount = await ClientAccount.findById(clientAccount._id)
+      .populate('resellerId', 'name companyName status')
+      .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+
+    return res.status(201).json({
+      clientAccount: sanitizeClientAccount(populatedAccount),
+    });
+  } catch (error) {
+    console.error('Admin portal add client account note error:', error);
+    return res.status(500).json({ error: 'Failed to add client account note' });
+  }
+};
+
+exports.deleteClientAccountNote = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.id);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client account not found' });
+    }
+
+    const noteId = normalizeTrimmedText(req.params.noteId);
+    const currentNotes = Array.isArray(clientAccount.adminNotes) ? clientAccount.adminNotes : [];
+    const noteExists = currentNotes.some((note) => String(note?._id || '') === noteId);
+
+    if (!noteExists) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    clientAccount.adminNotes = currentNotes.filter((note) => String(note?._id || '') !== noteId);
+    appendActivityEntries(clientAccount, [
+      buildActivityEntry('note_deleted', 'An internal admin note was deleted', req.user),
+    ]);
+
+    await clientAccount.save();
+
+    const populatedAccount = await ClientAccount.findById(clientAccount._id)
+      .populate('resellerId', 'name companyName status')
+      .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+
+    return res.json({
+      clientAccount: sanitizeClientAccount(populatedAccount),
+    });
+  } catch (error) {
+    console.error('Admin portal delete client account note error:', error);
+    return res.status(500).json({ error: 'Failed to delete client account note' });
   }
 };
