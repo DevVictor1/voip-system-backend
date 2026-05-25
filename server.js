@@ -16,6 +16,7 @@ const numberRoutes = require('./routes/numberRoutes');
 const authRoutes = require('./routes/authRoutes');
 const adminPortalRoutes = require('./routes/adminPortalRoutes');
 const resellerRoutes = require('./routes/resellerRoutes');
+const clientPortalRoutes = require('./routes/clientPortalRoutes');
 const User = require('./models/User');
 const {
   emitUserPresenceUpdate,
@@ -59,6 +60,7 @@ app.use('/api/numbers', numberRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin-portal', adminPortalRoutes);
 app.use('/api/reseller', resellerRoutes);
+app.use('/api/client-portal', clientPortalRoutes);
 
 // 🔥 RECORDING PROXY
 app.get('/api/recordings/:sid', async (req, res) => {

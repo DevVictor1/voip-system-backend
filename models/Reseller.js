@@ -90,6 +90,11 @@ const resellerSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    assignedUserIds: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: 'User',
+      default: [],
+    },
     adminNotes: {
       type: [resellerAdminNoteSchema],
       default: [],

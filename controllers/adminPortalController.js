@@ -7,8 +7,21 @@ const RESELLER_STATUSES = new Set(['active', 'inactive', 'pending']);
 const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
 const CLIENT_NUMBER_TYPES = new Set(['voice', 'sms', 'voice+sms']);
 const CLIENT_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive']);
+const CLIENT_ONBOARDING_STATUSES = new Set(['not_started', 'in_progress', 'ready']);
 const RESELLER_ACTIVITY_LIMIT = 100;
 const CLIENT_ACCOUNT_ACTIVITY_LIMIT = 100;
+const DEFAULT_CLIENT_ONBOARDING_CHECKLIST = [
+  { key: 'business_info_collected', label: 'Business info collected' },
+  { key: 'admin_user_assigned', label: 'Admin user assigned' },
+  { key: 'users_seats_planned', label: 'Users/seats planned' },
+  { key: 'phone_numbers_assigned', label: 'Phone numbers assigned' },
+  { key: 'sms_compliance_checked', label: 'SMS compliance/A2P status checked' },
+  { key: 'call_routing_reviewed', label: 'Call routing reviewed' },
+  { key: 'ivr_reviewed', label: 'IVR reviewed' },
+  { key: 'test_calls_completed', label: 'Test calls completed' },
+  { key: 'ready_for_number_porting', label: 'Ready for number porting' },
+  { key: 'ready_for_production', label: 'Ready for production' },
+];
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -96,6 +109,68 @@ const normalizeAssignedNumberRecords = (value) => {
     seenPhoneNumbers.add(key);
     return true;
   });
+};
+
+const normalizeChecklistKey = (value) => normalizeTrimmedText(value).toLowerCase();
+
+const normalizeOnboardingChecklist = (value) => {
+  const inputItems = Array.isArray(value) ? value : [];
+  const inputByKey = new Map(
+    inputItems
+      .map((item) => ({
+        key: normalizeChecklistKey(item?.key),
+        label: normalizeTrimmedText(item?.label),
+        completed: Boolean(item?.completed),
+      }))
+      .filter((item) => item.key)
+      .map((item) => [item.key, item])
+  );
+
+  return DEFAULT_CLIENT_ONBOARDING_CHECKLIST.map((item) => {
+    const existing = inputByKey.get(item.key);
+    return {
+      key: item.key,
+      label: existing?.label || item.label,
+      completed: Boolean(existing?.completed),
+    };
+  });
+};
+
+const deriveOnboardingStatus = (checklist = []) => {
+  const totalItems = checklist.length;
+  const completedCount = checklist.filter((item) => item?.completed).length;
+
+  if (completedCount === 0) {
+    return 'not_started';
+  }
+
+  if (totalItems > 0 && completedCount === totalItems) {
+    return 'ready';
+  }
+
+  return 'in_progress';
+};
+
+const buildOnboardingChecklistSummary = (checklist = [], accountStatus = '') => {
+  const normalizedChecklist = normalizeOnboardingChecklist(checklist);
+  const completedCount = normalizedChecklist.filter((item) => item.completed).length;
+  const totalItems = normalizedChecklist.length;
+  const progressPercentage = totalItems > 0
+    ? Math.round((completedCount / totalItems) * 100)
+    : 0;
+  const onboardingStatus = normalizeStatus(
+    accountStatus,
+    CLIENT_ONBOARDING_STATUSES,
+    deriveOnboardingStatus(normalizedChecklist)
+  );
+
+  return {
+    checklist: normalizedChecklist,
+    completedCount,
+    totalItems,
+    progressPercentage,
+    onboardingStatus,
+  };
 };
 
 const buildStructuredAssignedNumbers = (account) => {
@@ -244,6 +319,21 @@ const sanitizeReseller = (reseller) => ({
   contactPhone: reseller.contactPhone || '',
   status: reseller.status || 'pending',
   notes: reseller.notes || '',
+  assignedUserIds: Array.isArray(reseller.assignedUserIds)
+    ? reseller.assignedUserIds.map((user) => (
+        user?._id ? String(user._id) : String(user)
+      ))
+    : [],
+  assignedUsers: Array.isArray(reseller.assignedUserIds)
+    ? reseller.assignedUserIds
+        .filter((user) => user?._id)
+        .map((user) => ({
+          id: String(user._id),
+          name: user.name || '',
+          email: user.email || '',
+          role: user.role || '',
+        }))
+    : [],
   adminNotes: Array.isArray(reseller.adminNotes)
     ? reseller.adminNotes.map((note) => ({
         id: note?._id ? String(note._id) : '',
@@ -329,6 +419,7 @@ const sanitizeClientAccount = (account) => ({
         createdAt: entry?.createdAt || null,
       }))
     : [],
+  ...buildOnboardingChecklistSummary(account.onboardingChecklist, account.onboardingStatus),
   createdAt: account.createdAt,
   updatedAt: account.updatedAt,
 });
@@ -409,7 +500,9 @@ const validateReferencedReseller = async (resellerId) => {
 
 exports.listResellers = async (_req, res) => {
   try {
-    const resellers = await Reseller.find({}).sort({ createdAt: -1 });
+    const resellers = await Reseller.find({})
+      .populate('assignedUserIds', 'name email role')
+      .sort({ createdAt: -1 });
     return res.json({
       resellers: resellers.map(sanitizeReseller),
     });
@@ -421,7 +514,8 @@ exports.listResellers = async (_req, res) => {
 
 exports.getReseller = async (req, res) => {
   try {
-    const reseller = await Reseller.findById(req.params.id);
+    const reseller = await Reseller.findById(req.params.id)
+      .populate('assignedUserIds', 'name email role');
     if (!reseller) {
       return res.status(404).json({ error: 'Reseller not found' });
     }
@@ -437,6 +531,12 @@ exports.getReseller = async (req, res) => {
 
 exports.createReseller = async (req, res) => {
   try {
+    const assignedUserIdsInput = Array.isArray(req.body?.assignedUserIds) ? req.body.assignedUserIds : [];
+    const assignedUsersLookup = await validateReferencedUsers(assignedUserIdsInput);
+    if (assignedUsersLookup.error) {
+      return res.status(400).json({ error: assignedUsersLookup.error });
+    }
+
     const payload = {
       name: normalizeTrimmedText(req.body?.name),
       companyName: normalizeTrimmedText(req.body?.companyName),
@@ -444,6 +544,7 @@ exports.createReseller = async (req, res) => {
       contactPhone: normalizeTrimmedText(req.body?.contactPhone),
       status: normalizeStatus(req.body?.status, RESELLER_STATUSES, 'pending'),
       notes: normalizeTrimmedText(req.body?.notes),
+      assignedUserIds: assignedUsersLookup.userIds || [],
     };
 
     if (!payload.name || !payload.companyName) {
@@ -456,8 +557,12 @@ exports.createReseller = async (req, res) => {
         buildActivityEntry('reseller_created', 'Reseller created in Admin Portal', req.user),
       ],
     });
+
+    const populatedReseller = await Reseller.findById(reseller._id)
+      .populate('assignedUserIds', 'name email role');
+
     return res.status(201).json({
-      reseller: sanitizeReseller(reseller),
+      reseller: sanitizeReseller(populatedReseller),
     });
   } catch (error) {
     console.error('Admin portal create reseller error:', error);
@@ -483,6 +588,13 @@ exports.updateReseller = async (req, res) => {
     const nextContactPhone = normalizeTrimmedText(req.body?.contactPhone ?? reseller.contactPhone);
     const nextStatus = normalizeStatus(req.body?.status ?? reseller.status, RESELLER_STATUSES, reseller.status || 'pending');
     const nextNotes = normalizeTrimmedText(req.body?.notes ?? reseller.notes);
+    const assignedUserIdsInput = req.body?.assignedUserIds !== undefined
+      ? req.body.assignedUserIds
+      : reseller.assignedUserIds;
+    const assignedUsersLookup = await validateReferencedUsers(assignedUserIdsInput);
+    if (assignedUsersLookup.error) {
+      return res.status(400).json({ error: assignedUsersLookup.error });
+    }
     const nextActivityEntries = [];
 
     if (String(reseller.status || '') !== String(nextStatus || '')) {
@@ -509,18 +621,30 @@ exports.updateReseller = async (req, res) => {
       ));
     }
 
+    if (haveUserIdsChanged(reseller.assignedUserIds, assignedUsersLookup.userIds || [])) {
+      nextActivityEntries.push(buildActivityEntry(
+        'assigned_users_changed',
+        'Reseller team member metadata was updated',
+        req.user
+      ));
+    }
+
     reseller.name = nextName;
     reseller.companyName = nextCompanyName;
     reseller.contactEmail = nextContactEmail;
     reseller.contactPhone = nextContactPhone;
     reseller.status = nextStatus;
     reseller.notes = nextNotes;
+    reseller.assignedUserIds = assignedUsersLookup.userIds || [];
     appendResellerActivityEntries(reseller, nextActivityEntries);
 
     await reseller.save();
 
+    const populatedReseller = await Reseller.findById(reseller._id)
+      .populate('assignedUserIds', 'name email role');
+
     return res.json({
-      reseller: sanitizeReseller(reseller),
+      reseller: sanitizeReseller(populatedReseller),
     });
   } catch (error) {
     console.error('Admin portal update reseller error:', error);
@@ -555,8 +679,11 @@ exports.addResellerNote = async (req, res) => {
 
     await reseller.save();
 
+    const populatedReseller = await Reseller.findById(reseller._id)
+      .populate('assignedUserIds', 'name email role');
+
     return res.status(201).json({
-      reseller: sanitizeReseller(reseller),
+      reseller: sanitizeReseller(populatedReseller),
     });
   } catch (error) {
     console.error('Admin portal add reseller note error:', error);
@@ -586,8 +713,11 @@ exports.deleteResellerNote = async (req, res) => {
 
     await reseller.save();
 
+    const populatedReseller = await Reseller.findById(reseller._id)
+      .populate('assignedUserIds', 'name email role');
+
     return res.json({
-      reseller: sanitizeReseller(reseller),
+      reseller: sanitizeReseller(populatedReseller),
     });
   } catch (error) {
     console.error('Admin portal delete reseller note error:', error);
@@ -688,6 +818,12 @@ exports.createClientAccount = async (req, res) => {
       activityLog: [
         buildActivityEntry('account_created', 'Client account created in Admin Portal', req.user),
       ],
+      onboardingChecklist: normalizeOnboardingChecklist(req.body?.onboardingChecklist),
+      onboardingStatus: normalizeStatus(
+        req.body?.onboardingStatus,
+        CLIENT_ONBOARDING_STATUSES,
+        deriveOnboardingStatus(normalizeOnboardingChecklist(req.body?.onboardingChecklist))
+      ),
     });
 
     const populatedAccount = await ClientAccount.findById(clientAccount._id)
@@ -767,6 +903,14 @@ exports.updateClientAccount = async (req, res) => {
       : normalizeAssignedNumbers(
           req.body?.assignedNumbers !== undefined ? req.body?.assignedNumbers : clientAccount.assignedNumbers
         );
+    const nextOnboardingChecklist = req.body?.onboardingChecklist !== undefined
+      ? normalizeOnboardingChecklist(req.body?.onboardingChecklist)
+      : normalizeOnboardingChecklist(clientAccount.onboardingChecklist);
+    const nextOnboardingStatus = normalizeStatus(
+      req.body?.onboardingStatus,
+      CLIENT_ONBOARDING_STATUSES,
+      deriveOnboardingStatus(nextOnboardingChecklist)
+    );
 
     const nextActivityEntries = [];
 
@@ -794,6 +938,16 @@ exports.updateClientAccount = async (req, res) => {
       ));
     }
 
+    const previousChecklistSignature = JSON.stringify(normalizeOnboardingChecklist(clientAccount.onboardingChecklist));
+    const nextChecklistSignature = JSON.stringify(nextOnboardingChecklist);
+    if (previousChecklistSignature !== nextChecklistSignature) {
+      nextActivityEntries.push(buildActivityEntry(
+        'onboarding_checklist_changed',
+        'Client onboarding checklist progress was updated',
+        req.user
+      ));
+    }
+
     clientAccount.resellerId = resellerLookup.reseller?._id || null;
     clientAccount.companyName = companyName;
     clientAccount.accountStatus = nextStatus;
@@ -803,6 +957,8 @@ exports.updateClientAccount = async (req, res) => {
     clientAccount.assignedNumberRecords = assignedNumberRecordsInput;
     clientAccount.adminUserId = userLookup.user?._id || null;
     clientAccount.assignedUserIds = assignedUsersLookup.userIds || [];
+    clientAccount.onboardingChecklist = nextOnboardingChecklist;
+    clientAccount.onboardingStatus = nextOnboardingStatus;
     appendActivityEntries(clientAccount, nextActivityEntries);
 
     await clientAccount.save();

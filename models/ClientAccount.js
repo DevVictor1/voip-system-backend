@@ -3,6 +3,27 @@ const mongoose = require('mongoose');
 const CLIENT_ACCOUNT_STATUSES = ['active', 'inactive', 'suspended', 'pending'];
 const CLIENT_NUMBER_TYPES = ['voice', 'sms', 'voice+sms'];
 const CLIENT_NUMBER_STATUSES = ['active', 'pending', 'porting', 'inactive'];
+const CLIENT_ONBOARDING_CHECKLIST_STATUSES = ['not_started', 'in_progress', 'ready'];
+
+const clientAccountChecklistItemSchema = new mongoose.Schema(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    label: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    completed: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  { _id: false }
+);
 
 const clientNumberMetadataSchema = new mongoose.Schema(
   {
@@ -154,6 +175,16 @@ const clientAccountSchema = new mongoose.Schema(
     activityLog: {
       type: [clientAccountActivityLogSchema],
       default: [],
+    },
+    onboardingChecklist: {
+      type: [clientAccountChecklistItemSchema],
+      default: [],
+    },
+    onboardingStatus: {
+      type: String,
+      enum: CLIENT_ONBOARDING_CHECKLIST_STATUSES,
+      default: 'not_started',
+      trim: true,
     },
   },
   { timestamps: true }
