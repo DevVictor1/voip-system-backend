@@ -5,6 +5,8 @@ const User = require('../models/User');
 
 const RESELLER_STATUSES = new Set(['active', 'inactive', 'pending']);
 const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
+const CLIENT_NUMBER_TYPES = new Set(['voice', 'sms', 'voice+sms']);
+const CLIENT_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive']);
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -48,6 +50,112 @@ const normalizeAssignedNumbers = (value) => {
   return [...new Set(text.split(',').map((item) => normalizeTrimmedText(item)).filter(Boolean))];
 };
 
+const normalizeAssignedNumberRecord = (record = {}) => {
+  const phoneNumber = normalizeTrimmedText(record?.phoneNumber);
+  if (!phoneNumber) {
+    return null;
+  }
+
+  const assignedUserId = normalizeOptionalObjectId(record?.assignedUserId);
+  if (assignedUserId === '__invalid__') {
+    return '__invalid__';
+  }
+
+  return {
+    phoneNumber,
+    label: normalizeTrimmedText(record?.label),
+    type: normalizeStatus(record?.type, CLIENT_NUMBER_TYPES, 'voice'),
+    status: normalizeStatus(record?.status, CLIENT_NUMBER_STATUSES, 'pending'),
+    assignedUserId: assignedUserId || null,
+    assignedDepartment: normalizeTrimmedText(record?.assignedDepartment),
+    notes: normalizeTrimmedText(record?.notes),
+  };
+};
+
+const normalizeAssignedNumberRecords = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const records = value
+    .map((record) => normalizeAssignedNumberRecord(record))
+    .filter(Boolean);
+
+  if (records.includes('__invalid__')) {
+    return '__invalid__';
+  }
+
+  const seenPhoneNumbers = new Set();
+  return records.filter((record) => {
+    const key = record.phoneNumber.toLowerCase();
+    if (seenPhoneNumbers.has(key)) {
+      return false;
+    }
+    seenPhoneNumbers.add(key);
+    return true;
+  });
+};
+
+const buildStructuredAssignedNumbers = (account) => {
+  const structuredRecords = Array.isArray(account?.assignedNumberRecords)
+    ? account.assignedNumberRecords
+    : [];
+  const legacyNumbers = Array.isArray(account?.assignedNumbers)
+    ? account.assignedNumbers
+    : [];
+
+  const normalizedRecords = structuredRecords
+    .map((record) => {
+      const normalizedPhoneNumber = normalizeTrimmedText(record?.phoneNumber);
+      if (!normalizedPhoneNumber) {
+        return null;
+      }
+
+      return {
+        phoneNumber: normalizedPhoneNumber,
+        label: normalizeTrimmedText(record?.label),
+        type: normalizeStatus(record?.type, CLIENT_NUMBER_TYPES, 'voice'),
+        status: normalizeStatus(record?.status, CLIENT_NUMBER_STATUSES, 'pending'),
+        assignedUserId: record?.assignedUserId?._id
+          ? String(record.assignedUserId._id)
+          : (record?.assignedUserId ? String(record.assignedUserId) : null),
+        assignedUser: record?.assignedUserId?._id
+          ? {
+              id: String(record.assignedUserId._id),
+              name: record.assignedUserId.name || '',
+              email: record.assignedUserId.email || '',
+              role: record.assignedUserId.role || '',
+            }
+          : null,
+        assignedDepartment: normalizeTrimmedText(record?.assignedDepartment),
+        notes: normalizeTrimmedText(record?.notes),
+      };
+    })
+    .filter(Boolean);
+
+  const existingPhoneNumbers = new Set(
+    normalizedRecords.map((record) => record.phoneNumber.toLowerCase())
+  );
+
+  const legacyRecords = legacyNumbers
+    .map((phoneNumber) => normalizeTrimmedText(phoneNumber))
+    .filter(Boolean)
+    .filter((phoneNumber) => !existingPhoneNumbers.has(phoneNumber.toLowerCase()))
+    .map((phoneNumber) => ({
+      phoneNumber,
+      label: '',
+      type: 'voice',
+      status: 'active',
+      assignedUserId: null,
+      assignedUser: null,
+      assignedDepartment: '',
+      notes: '',
+      isLegacy: true,
+    }));
+
+  return [...normalizedRecords, ...legacyRecords];
+};
+
 const sanitizeReseller = (reseller) => ({
   id: String(reseller._id),
   name: reseller.name || '',
@@ -78,6 +186,7 @@ const sanitizeClientAccount = (account) => ({
   plan: account.plan || '',
   seatLimit: Number.isFinite(account.seatLimit) ? account.seatLimit : 0,
   assignedNumbers: Array.isArray(account.assignedNumbers) ? account.assignedNumbers : [],
+  assignedNumberRecords: buildStructuredAssignedNumbers(account),
   adminUserId: account.adminUserId?._id
     ? String(account.adminUserId._id)
     : (account.adminUserId ? String(account.adminUserId) : null),
@@ -89,6 +198,21 @@ const sanitizeClientAccount = (account) => ({
         role: account.adminUserId.role || '',
       }
     : null,
+  assignedUserIds: Array.isArray(account.assignedUserIds)
+    ? account.assignedUserIds.map((user) => (
+        user?._id ? String(user._id) : String(user)
+      ))
+    : [],
+  assignedUsers: Array.isArray(account.assignedUserIds)
+    ? account.assignedUserIds
+        .filter((user) => user?._id)
+        .map((user) => ({
+          id: String(user._id),
+          name: user.name || '',
+          email: user.email || '',
+          role: user.role || '',
+        }))
+    : [],
   createdAt: account.createdAt,
   updatedAt: account.updatedAt,
 });
@@ -108,6 +232,46 @@ const validateReferencedUser = async (adminUserId) => {
   }
 
   return { user };
+};
+
+const validateReferencedUsers = async (assignedUserIds = []) => {
+  if (!Array.isArray(assignedUserIds)) {
+    return { error: 'assignedUserIds must be an array' };
+  }
+
+  const normalizedIds = [...new Set(
+    assignedUserIds
+      .map((value) => normalizeOptionalObjectId(value))
+      .filter(Boolean)
+  )];
+
+  if (normalizedIds.includes('__invalid__')) {
+    return { error: 'assignedUserIds contains an invalid user id' };
+  }
+
+  if (normalizedIds.length === 0) {
+    return { userIds: [], users: [] };
+  }
+
+  const users = await User.find({
+    _id: { $in: normalizedIds },
+  }).select('name email role');
+
+  if (users.length !== normalizedIds.length) {
+    return { error: 'One or more assigned users were not found' };
+  }
+
+  return { userIds: normalizedIds, users };
+};
+
+const validateAssignedNumberRecordUsers = async (records = []) => {
+  const assignedUserIds = [...new Set(
+    records
+      .map((record) => record?.assignedUserId)
+      .filter(Boolean)
+  )];
+
+  return validateReferencedUsers(assignedUserIds);
 };
 
 const validateReferencedReseller = async (resellerId) => {
@@ -217,6 +381,8 @@ exports.listClientAccounts = async (_req, res) => {
     const clientAccounts = await ClientAccount.find({})
       .populate('resellerId', 'name companyName status')
       .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role')
       .sort({ createdAt: -1 });
 
     return res.json({
@@ -232,7 +398,9 @@ exports.getClientAccount = async (req, res) => {
   try {
     const clientAccount = await ClientAccount.findById(req.params.id)
       .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role');
+      .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role');
 
     if (!clientAccount) {
       return res.status(404).json({ error: 'Client account not found' });
@@ -251,10 +419,18 @@ exports.createClientAccount = async (req, res) => {
   try {
     const resellerId = normalizeOptionalObjectId(req.body?.resellerId);
     const adminUserId = normalizeOptionalObjectId(req.body?.adminUserId);
+    const assignedUserIdsInput = Array.isArray(req.body?.assignedUserIds) ? req.body.assignedUserIds : [];
+    const assignedNumberRecordsInput = normalizeAssignedNumberRecords(req.body?.assignedNumberRecords);
 
-    const [resellerLookup, userLookup] = await Promise.all([
+    if (assignedNumberRecordsInput === '__invalid__') {
+      return res.status(400).json({ error: 'assignedNumberRecords contains an invalid assigned user id' });
+    }
+
+    const [resellerLookup, userLookup, assignedUsersLookup, assignedNumberRecordUsersLookup] = await Promise.all([
       validateReferencedReseller(resellerId),
       validateReferencedUser(adminUserId),
+      validateReferencedUsers(assignedUserIdsInput),
+      validateAssignedNumberRecordUsers(assignedNumberRecordsInput),
     ]);
 
     if (resellerLookup.error) {
@@ -263,6 +439,14 @@ exports.createClientAccount = async (req, res) => {
 
     if (userLookup.error) {
       return res.status(400).json({ error: userLookup.error });
+    }
+
+    if (assignedUsersLookup.error) {
+      return res.status(400).json({ error: assignedUsersLookup.error });
+    }
+
+    if (assignedNumberRecordUsersLookup.error) {
+      return res.status(400).json({ error: assignedNumberRecordUsersLookup.error });
     }
 
     const companyName = normalizeTrimmedText(req.body?.companyName);
@@ -276,13 +460,19 @@ exports.createClientAccount = async (req, res) => {
       accountStatus: normalizeStatus(req.body?.accountStatus, CLIENT_ACCOUNT_STATUSES, 'pending'),
       plan: normalizeTrimmedText(req.body?.plan),
       seatLimit: normalizeNonNegativeInteger(req.body?.seatLimit, 0),
-      assignedNumbers: normalizeAssignedNumbers(req.body?.assignedNumbers),
+      assignedNumbers: assignedNumberRecordsInput.length > 0
+        ? assignedNumberRecordsInput.map((record) => record.phoneNumber)
+        : normalizeAssignedNumbers(req.body?.assignedNumbers),
+      assignedNumberRecords: assignedNumberRecordsInput,
       adminUserId: userLookup.user?._id || null,
+      assignedUserIds: assignedUsersLookup.userIds || [],
     });
 
     const populatedAccount = await ClientAccount.findById(clientAccount._id)
       .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role');
+      .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role');
 
     return res.status(201).json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -306,10 +496,22 @@ exports.updateClientAccount = async (req, res) => {
     const adminUserId = normalizeOptionalObjectId(
       req.body?.adminUserId !== undefined ? req.body?.adminUserId : clientAccount.adminUserId
     );
+    const assignedUserIdsInput = req.body?.assignedUserIds !== undefined
+      ? req.body.assignedUserIds
+      : clientAccount.assignedUserIds;
+    const assignedNumberRecordsInput = req.body?.assignedNumberRecords !== undefined
+      ? normalizeAssignedNumberRecords(req.body.assignedNumberRecords)
+      : normalizeAssignedNumberRecords(clientAccount.assignedNumberRecords);
 
-    const [resellerLookup, userLookup] = await Promise.all([
+    if (assignedNumberRecordsInput === '__invalid__') {
+      return res.status(400).json({ error: 'assignedNumberRecords contains an invalid assigned user id' });
+    }
+
+    const [resellerLookup, userLookup, assignedUsersLookup, assignedNumberRecordUsersLookup] = await Promise.all([
       validateReferencedReseller(resellerId),
       validateReferencedUser(adminUserId),
+      validateReferencedUsers(assignedUserIdsInput),
+      validateAssignedNumberRecordUsers(assignedNumberRecordsInput),
     ]);
 
     if (resellerLookup.error) {
@@ -318,6 +520,14 @@ exports.updateClientAccount = async (req, res) => {
 
     if (userLookup.error) {
       return res.status(400).json({ error: userLookup.error });
+    }
+
+    if (assignedUsersLookup.error) {
+      return res.status(400).json({ error: assignedUsersLookup.error });
+    }
+
+    if (assignedNumberRecordUsersLookup.error) {
+      return res.status(400).json({ error: assignedNumberRecordUsersLookup.error });
     }
 
     const companyName = normalizeTrimmedText(req.body?.companyName ?? clientAccount.companyName);
@@ -334,16 +544,22 @@ exports.updateClientAccount = async (req, res) => {
     );
     clientAccount.plan = normalizeTrimmedText(req.body?.plan ?? clientAccount.plan);
     clientAccount.seatLimit = normalizeNonNegativeInteger(req.body?.seatLimit ?? clientAccount.seatLimit, 0);
-    clientAccount.assignedNumbers = normalizeAssignedNumbers(
-      req.body?.assignedNumbers !== undefined ? req.body?.assignedNumbers : clientAccount.assignedNumbers
-    );
+    clientAccount.assignedNumbers = assignedNumberRecordsInput.length > 0
+      ? assignedNumberRecordsInput.map((record) => record.phoneNumber)
+      : normalizeAssignedNumbers(
+          req.body?.assignedNumbers !== undefined ? req.body?.assignedNumbers : clientAccount.assignedNumbers
+        );
+    clientAccount.assignedNumberRecords = assignedNumberRecordsInput;
     clientAccount.adminUserId = userLookup.user?._id || null;
+    clientAccount.assignedUserIds = assignedUsersLookup.userIds || [];
 
     await clientAccount.save();
 
     const populatedAccount = await ClientAccount.findById(clientAccount._id)
       .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role');
+      .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role')
+      .populate('assignedNumberRecords.assignedUserId', 'name email role');
 
     return res.json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -376,7 +592,8 @@ exports.updateClientAccountStatus = async (req, res) => {
 
     const populatedAccount = await ClientAccount.findById(clientAccount._id)
       .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role');
+      .populate('adminUserId', 'name email role')
+      .populate('assignedUserIds', 'name email role');
 
     return res.json({
       clientAccount: sanitizeClientAccount(populatedAccount),
