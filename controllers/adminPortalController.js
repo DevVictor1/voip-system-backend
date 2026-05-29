@@ -554,7 +554,7 @@ exports.createReseller = async (req, res) => {
     const reseller = await Reseller.create({
       ...payload,
       activityLog: [
-        buildActivityEntry('reseller_created', 'Reseller created in Admin Portal', req.user),
+        buildActivityEntry('reseller_created', 'Reseller partner created', req.user),
       ],
     });
 
@@ -616,7 +616,7 @@ exports.updateReseller = async (req, res) => {
     if (detailsChanged) {
       nextActivityEntries.push(buildActivityEntry(
         'details_updated',
-        'Reseller metadata details were updated',
+        'Reseller partner details were updated',
         req.user
       ));
     }
@@ -624,7 +624,7 @@ exports.updateReseller = async (req, res) => {
     if (haveUserIdsChanged(reseller.assignedUserIds, assignedUsersLookup.userIds || [])) {
       nextActivityEntries.push(buildActivityEntry(
         'assigned_users_changed',
-        'Reseller team member metadata was updated',
+        'Reseller team members were updated',
         req.user
       ));
     }
@@ -739,7 +739,7 @@ exports.listClientAccounts = async (_req, res) => {
     });
   } catch (error) {
     console.error('Admin portal list client accounts error:', error);
-    return res.status(500).json({ error: 'Failed to fetch client accounts' });
+    return res.status(500).json({ error: 'Failed to fetch client organizations' });
   }
 };
 
@@ -752,7 +752,7 @@ exports.getClientAccount = async (req, res) => {
       .populate('assignedNumberRecords.assignedUserId', 'name email role');
 
     if (!clientAccount) {
-      return res.status(404).json({ error: 'Client account not found' });
+      return res.status(404).json({ error: 'Client organization not found' });
     }
 
     return res.json({
@@ -760,7 +760,7 @@ exports.getClientAccount = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin portal get client account error:', error);
-    return res.status(500).json({ error: 'Failed to fetch client account' });
+    return res.status(500).json({ error: 'Failed to fetch client organization' });
   }
 };
 
@@ -816,7 +816,7 @@ exports.createClientAccount = async (req, res) => {
       adminUserId: userLookup.user?._id || null,
       assignedUserIds: assignedUsersLookup.userIds || [],
       activityLog: [
-        buildActivityEntry('account_created', 'Client account created in Admin Portal', req.user),
+        buildActivityEntry('account_created', 'Client organization created', req.user),
       ],
       onboardingChecklist: normalizeOnboardingChecklist(req.body?.onboardingChecklist),
       onboardingStatus: normalizeStatus(
@@ -837,7 +837,7 @@ exports.createClientAccount = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin portal create client account error:', error);
-    return res.status(500).json({ error: 'Failed to create client account' });
+    return res.status(500).json({ error: 'Failed to create client organization' });
   }
 };
 
@@ -845,7 +845,7 @@ exports.updateClientAccount = async (req, res) => {
   try {
     const clientAccount = await ClientAccount.findById(req.params.id);
     if (!clientAccount) {
-      return res.status(404).json({ error: 'Client account not found' });
+      return res.status(404).json({ error: 'Client organization not found' });
     }
 
     const resellerId = normalizeOptionalObjectId(
@@ -933,7 +933,7 @@ exports.updateClientAccount = async (req, res) => {
     if (haveAssignedNumberRecordsChanged(clientAccount.assignedNumberRecords, assignedNumberRecordsInput)) {
       nextActivityEntries.push(buildActivityEntry(
         'number_metadata_changed',
-        'Client number metadata was updated',
+        'Assigned phone numbers were updated',
         req.user
       ));
     }
@@ -974,7 +974,7 @@ exports.updateClientAccount = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin portal update client account error:', error);
-    return res.status(500).json({ error: 'Failed to update client account' });
+    return res.status(500).json({ error: 'Failed to update client organization' });
   }
 };
 
@@ -982,7 +982,7 @@ exports.updateClientAccountStatus = async (req, res) => {
   try {
     const clientAccount = await ClientAccount.findById(req.params.id);
     if (!clientAccount) {
-      return res.status(404).json({ error: 'Client account not found' });
+      return res.status(404).json({ error: 'Client organization not found' });
     }
 
     const nextStatus = normalizeStatus(
@@ -1019,7 +1019,7 @@ exports.updateClientAccountStatus = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin portal update client account status error:', error);
-    return res.status(500).json({ error: 'Failed to update client account status' });
+    return res.status(500).json({ error: 'Failed to update client organization status' });
   }
 };
 
@@ -1048,7 +1048,7 @@ exports.addClientAccountNote = async (req, res) => {
   try {
     const clientAccount = await ClientAccount.findById(req.params.id);
     if (!clientAccount) {
-      return res.status(404).json({ error: 'Client account not found' });
+      return res.status(404).json({ error: 'Client organization not found' });
     }
 
     const text = normalizeAdminNoteText(req.body?.text);
@@ -1081,7 +1081,7 @@ exports.addClientAccountNote = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin portal add client account note error:', error);
-    return res.status(500).json({ error: 'Failed to add client account note' });
+    return res.status(500).json({ error: 'Failed to add client organization note' });
   }
 };
 
@@ -1089,7 +1089,7 @@ exports.deleteClientAccountNote = async (req, res) => {
   try {
     const clientAccount = await ClientAccount.findById(req.params.id);
     if (!clientAccount) {
-      return res.status(404).json({ error: 'Client account not found' });
+      return res.status(404).json({ error: 'Client organization not found' });
     }
 
     const noteId = normalizeTrimmedText(req.params.noteId);
@@ -1118,6 +1118,6 @@ exports.deleteClientAccountNote = async (req, res) => {
     });
   } catch (error) {
     console.error('Admin portal delete client account note error:', error);
-    return res.status(500).json({ error: 'Failed to delete client account note' });
+    return res.status(500).json({ error: 'Failed to delete client organization note' });
   }
 };
