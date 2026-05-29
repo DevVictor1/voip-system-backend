@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 
 const groupCalendarEventSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     teamId: {
       type: String,
       required: true,
@@ -47,5 +52,9 @@ const groupCalendarEventSchema = new mongoose.Schema(
 
 groupCalendarEventSchema.index({ teamId: 1, startAt: 1, createdAt: 1 });
 groupCalendarEventSchema.index({ teamId: 1, isPinned: 1, pinnedAt: 1, startAt: 1 });
+groupCalendarEventSchema.index(
+  { clientAccountId: 1, teamId: 1, startAt: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
+);
 
 module.exports = mongoose.model('GroupCalendarEvent', groupCalendarEventSchema);

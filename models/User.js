@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { USER_ROLES } = require('../utils/accessControl');
 
-const USER_ROLES = ['admin', 'agent'];
 const USER_DEPARTMENTS = ['tech', 'support', 'sales'];
 const USER_ASSIGNMENT_STATUSES = ['available', 'busy', 'offline'];
 const USER_AVAILABILITY_STATUSES = ['online', 'busy', 'meeting', 'break', 'offline'];
@@ -30,6 +30,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: USER_ROLES,
       required: true,
+    },
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
     },
     agentId: {
       type: String,
@@ -95,6 +100,11 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index(
+  { clientAccountId: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
+);
+
+userSchema.index(
   { agentId: 1 },
   {
     unique: true,
@@ -120,6 +130,7 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       name: this.name,
       email: this.email,
       role: this.role,
+      clientAccountId: this.clientAccountId ? String(this.clientAccountId) : null,
       agentId: this.agentId,
       department: this.department,
       isActive: this.isActive,

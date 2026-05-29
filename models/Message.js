@@ -2,6 +2,11 @@
 
 const messageSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     sid: String, // ðŸ”¥ Twilio Message SID
 
     from: String,
@@ -231,6 +236,11 @@ const messageSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+messageSchema.index(
+  { clientAccountId: 1, conversationId: 1, createdAt: -1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('Message', messageSchema);

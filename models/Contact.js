@@ -4,6 +4,11 @@ const CONTACT_ASSIGNMENT_STATUSES = ['open', 'resolved', 'closed'];
 
 const contactSchema = new mongoose.Schema(
 {
+  clientAccountId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClientAccount',
+    default: null,
+  },
   firstName: String,
   lastName: String,
 
@@ -59,6 +64,11 @@ const contactSchema = new mongoose.Schema(
   },
 },
 { timestamps: true }
+);
+
+contactSchema.index(
+  { clientAccountId: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 contactSchema.set('toJSON', {

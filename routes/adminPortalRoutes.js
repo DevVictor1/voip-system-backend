@@ -14,11 +14,18 @@ const {
   addClientAccountNote,
   deleteClientAccountNote,
 } = require('../controllers/adminPortalController');
-const { authenticate, requireRole } = require('../middleware/authMiddleware');
+const {
+  createClientNumber,
+  deleteClientNumber,
+  listAllClientNumbers,
+  listClientNumbers,
+  updateClientNumber,
+} = require('../controllers/clientNumberOwnershipController');
+const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-router.use(authenticate, requireRole('admin'));
+router.use(authenticate, requirePlatformAdmin);
 
 router.get('/resellers', listResellers);
 router.get('/resellers/:id', getReseller);
@@ -34,5 +41,10 @@ router.put('/client-accounts/:id', updateClientAccount);
 router.patch('/client-accounts/:id/status', updateClientAccountStatus);
 router.post('/client-accounts/:id/notes', addClientAccountNote);
 router.delete('/client-accounts/:id/notes/:noteId', deleteClientAccountNote);
+router.get('/client-numbers', listAllClientNumbers);
+router.get('/client-accounts/:clientAccountId/numbers', listClientNumbers);
+router.post('/client-accounts/:clientAccountId/numbers', createClientNumber);
+router.put('/client-accounts/:clientAccountId/numbers/:numberId', updateClientNumber);
+router.delete('/client-accounts/:clientAccountId/numbers/:numberId', deleteClientNumber);
 
 module.exports = router;

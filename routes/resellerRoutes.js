@@ -1,10 +1,10 @@
 const express = require('express');
 const { getResellerOverview } = require('../controllers/adminPortalController');
-const { authenticate, requireRole } = require('../middleware/authMiddleware');
+const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-router.use(authenticate, requireRole('admin'));
+router.use(authenticate, requirePlatformAdmin);
 
 router.get('/overview', getResellerOverview);
 

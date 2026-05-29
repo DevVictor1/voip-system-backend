@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 
 const portingNumberSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     phoneNumber: {
       type: String,
       required: true,
@@ -47,6 +52,11 @@ const portingNumberSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+portingNumberSchema.index(
+  { clientAccountId: 1, phoneNumber: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('PortingNumber', portingNumberSchema);

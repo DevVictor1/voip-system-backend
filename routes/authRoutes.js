@@ -15,7 +15,7 @@ const {
   resetUserPassword,
   deleteUser,
 } = require('../controllers/authController');
-const { authenticate, requireRole } = require('../middleware/authMiddleware');
+const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
@@ -25,13 +25,13 @@ router.patch('/me/availability-status', authenticate, updateMyAvailabilityStatus
 router.patch('/me/avatar', authenticate, updateMyAvatar);
 router.patch('/me/favorites', authenticate, toggleMyFavoriteConversation);
 router.get('/teammates', authenticate, listTeammates);
-router.get('/agent-status', authenticate, requireRole('admin'), listAgentStatus);
+router.get('/agent-status', authenticate, requirePlatformAdmin, listAgentStatus);
 router.post('/bootstrap', bootstrapUser);
-router.get('/users', authenticate, requireRole('admin'), listUsers);
-router.post('/users', authenticate, requireRole('admin'), createUser);
-router.get('/users/:id', authenticate, requireRole('admin'), getUser);
-router.put('/users/:id', authenticate, requireRole('admin'), updateUser);
-router.patch('/users/:id/password', authenticate, requireRole('admin'), resetUserPassword);
-router.delete('/users/:id', authenticate, requireRole('admin'), deleteUser);
+router.get('/users', authenticate, requirePlatformAdmin, listUsers);
+router.post('/users', authenticate, requirePlatformAdmin, createUser);
+router.get('/users/:id', authenticate, requirePlatformAdmin, getUser);
+router.put('/users/:id', authenticate, requirePlatformAdmin, updateUser);
+router.patch('/users/:id/password', authenticate, requirePlatformAdmin, resetUserPassword);
+router.delete('/users/:id', authenticate, requirePlatformAdmin, deleteUser);
 
 module.exports = router;

@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 
 const textingGroupSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     name: {
       type: String,
       required: true,
@@ -35,6 +40,15 @@ const textingGroupSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+textingGroupSchema.index(
+  { clientAccountId: 1, slug: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
+);
+textingGroupSchema.index(
+  { clientAccountId: 1, assignedNumber: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('TextingGroup', textingGroupSchema);

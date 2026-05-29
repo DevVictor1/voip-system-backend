@@ -4,6 +4,11 @@ const TEAM_CALENDAR_TIMEZONES = ['America/New_York', 'America/Chicago', 'America
 
 const teamSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     name: {
       type: String,
       required: true,
@@ -42,6 +47,11 @@ const teamSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+teamSchema.index(
+  { clientAccountId: 1, slug: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('Team', teamSchema);

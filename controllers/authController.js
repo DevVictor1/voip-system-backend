@@ -1,6 +1,10 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Call = require('../models/Call');
+const {
+  isPlatformAdmin,
+  normalizeRole: normalizeAccessRole,
+} = require('../utils/accessControl');
 
 const DEFAULT_EXPIRES_IN = '7d';
 const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answer'];
@@ -107,11 +111,7 @@ const resolveActiveCallCounts = async (agentIds = []) => {
 };
 
 const normalizeRole = (role) => {
-  if (role === 'admin' || role === 'agent') {
-    return role;
-  }
-
-  return '';
+  return normalizeAccessRole(role);
 };
 
 const normalizeDepartment = (department) => {
@@ -279,9 +279,16 @@ const normalizeAgentIdSegment = (value) => {
 
 const buildAutoAgentIdBase = ({ name, role, department }) => {
   const normalizedName = normalizeAgentIdSegment(name) || 'user';
-  const prefix = role === 'admin'
+  const normalizedRole = normalizeRole(role);
+  const prefix = normalizedRole === 'admin' || normalizedRole === 'platform_admin'
     ? 'admin'
-    : (normalizeAgentIdSegment(department) || 'agent');
+    : normalizedRole === 'reseller_admin'
+      ? 'reseller'
+      : normalizedRole === 'client_admin'
+        ? 'client_admin'
+        : normalizedRole === 'client_user'
+          ? 'client'
+          : (normalizeAgentIdSegment(department) || 'agent');
 
   return `${prefix}_${normalizedName}`;
 };
@@ -589,7 +596,7 @@ exports.bootstrapUser = async (req, res) => {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
     const name = String(req.body?.name || '').trim();
-    const role = req.body?.role === 'admin' ? 'admin' : 'agent';
+    const role = normalizeRole(req.body?.role) || 'agent';
     const requestedAgentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
     const department = normalizeDepartment(req.body?.department);
 
@@ -839,9 +846,9 @@ exports.deleteUser = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    if (user.role === 'admin' && user.isActive !== false) {
+    if (isPlatformAdmin(user) && user.isActive !== false) {
       const activeAdminCount = await User.countDocuments({
-        role: 'admin',
+        role: { $in: ['admin', 'platform_admin'] },
         isActive: true,
       });
 

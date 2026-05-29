@@ -1,5 +1,12 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const {
+  canManageClientAccount,
+  hasAnyRole,
+  isClientAdmin,
+  isPlatformAdmin,
+  isResellerAdmin,
+} = require('../utils/accessControl');
 
 const getJwtSecret = () => {
   return process.env.JWT_SECRET || process.env.JWT_ACCESS_SECRET || '';
@@ -48,7 +55,7 @@ const requireRole = (...roles) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    if (!roles.includes(req.user.role)) {
+    if (!hasAnyRole(req.user, roles)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
@@ -56,8 +63,44 @@ const requireRole = (...roles) => {
   };
 };
 
+const requirePlatformAdmin = requireRole('platform_admin');
+const requireResellerAdmin = requireRole('reseller_admin');
+const requireClientAdmin = requireRole('client_admin');
+
+const requireCanManageClientAccount = (paramName = 'id') => {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const clientAccountId = req.params?.[paramName] || req.body?.clientAccountId;
+      if (!clientAccountId) {
+        return res.status(400).json({ error: 'clientAccountId is required' });
+      }
+
+      const allowed = await canManageClientAccount(req.user, clientAccountId);
+      if (!allowed) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      return next();
+    } catch (error) {
+      return res.status(500).json({ error: 'Failed to verify client account access' });
+    }
+  };
+};
+
 module.exports = {
   authenticate,
   requireRole,
+  requirePlatformAdmin,
+  requireResellerAdmin,
+  requireClientAdmin,
+  requireCanManageClientAccount,
   extractBearerToken,
+  isPlatformAdmin,
+  isResellerAdmin,
+  isClientAdmin,
+  canManageClientAccount,
 };

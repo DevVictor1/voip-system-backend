@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 
 const conversationSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     conversationId: {
       type: String,
       default: '',
@@ -47,6 +52,11 @@ const conversationSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+conversationSchema.index(
+  { clientAccountId: 1, type: 1, lastMessageAt: -1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('Conversation', conversationSchema);

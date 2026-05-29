@@ -2,6 +2,11 @@
 
 const callSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     callSid: { type: String, required: true, unique: true },
 
     from: String,
@@ -56,6 +61,11 @@ const callSchema = new mongoose.Schema(
     recordingUrl: String,
   },
   { timestamps: true }
+);
+
+callSchema.index(
+  { clientAccountId: 1, createdAt: -1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('Call', callSchema);

@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 
 const messageThreadCommentSchema = new mongoose.Schema(
   {
+    clientAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientAccount',
+      default: null,
+    },
     parentMessageId: {
       type: String,
       required: true,
@@ -75,5 +80,9 @@ const messageThreadCommentSchema = new mongoose.Schema(
 );
 
 messageThreadCommentSchema.index({ parentMessageId: 1, createdAt: 1 });
+messageThreadCommentSchema.index(
+  { clientAccountId: 1, conversationId: 1, createdAt: 1 },
+  { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
+);
 
 module.exports = mongoose.model('MessageThreadComment', messageThreadCommentSchema);
