@@ -11,6 +11,7 @@ const isChecklistItemComplete = (checklist = [], key) => (
 );
 
 const CLIENT_ACCOUNT_ACTIVITY_LIMIT = 100;
+const SCOPED_ASSIGNABLE_ROLES = new Set(['agent', 'client_admin', 'client_user']);
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -81,6 +82,11 @@ const validateAssignableUsers = async ({
   }
 
   if (!allowDifferentClientAccounts) {
+    const privilegedUser = users.find((user) => !SCOPED_ASSIGNABLE_ROLES.has(String(user.role || '').toLowerCase()));
+    if (privilegedUser) {
+      return { error: 'One or more selected users has a role that cannot be assigned from this portal' };
+    }
+
     const clientId = getClientAccountIdString(clientAccountId);
     const blockedUser = users.find((user) => {
       const userClientAccountId = getClientAccountIdString(user.clientAccountId);
@@ -88,6 +94,15 @@ const validateAssignableUsers = async ({
     });
 
     if (blockedUser) {
+      return { error: 'One or more selected users belongs to another client organization' };
+    }
+
+    const assignedElsewhere = await ClientAccount.exists({
+      _id: { $ne: clientAccountId },
+      assignedUserIds: { $in: normalized.ids },
+    });
+
+    if (assignedElsewhere) {
       return { error: 'One or more selected users belongs to another client organization' };
     }
   }
@@ -431,6 +446,22 @@ exports.updateClientPortalAssignedUsers = async (req, res) => {
     }
 
     await clientAccount.save();
+    const retainedUserIds = [
+      ...(assignedUsersLookup.userIds || []),
+      ...(clientAccount.adminUserId ? [clientAccount.adminUserId] : []),
+    ];
+
+    await User.updateMany(
+      { _id: { $in: retainedUserIds } },
+      { clientAccountId: clientAccount._id }
+    );
+    await User.updateMany(
+      {
+        clientAccountId: clientAccount._id,
+        _id: { $nin: retainedUserIds },
+      },
+      { clientAccountId: null }
+    );
 
     const populatedAccount = await findPopulatedClientAccountById(clientAccount._id);
     return res.json({

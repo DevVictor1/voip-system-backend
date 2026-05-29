@@ -15,6 +15,13 @@ const {
   listClientNumbers,
   updateClientNumber,
 } = require('../controllers/clientNumberOwnershipController');
+const {
+  assignScopedUser,
+  createScopedUser,
+  listScopedUsers,
+  removeScopedUser,
+  updateScopedUser,
+} = require('../controllers/scopedUserManagementController');
 const { authenticate } = require('../middleware/authMiddleware');
 const {
   resolveAccountContext,
@@ -54,6 +61,31 @@ router.put(
   '/client-accounts/:clientAccountId/assigned-users',
   requireCanManageClientAccount('clientAccountId'),
   updateResellerPortalAssignedUsers
+);
+router.get(
+  '/client-accounts/:clientAccountId/users',
+  requireCanAccessClientAccount('clientAccountId'),
+  listScopedUsers
+);
+router.post(
+  '/client-accounts/:clientAccountId/users',
+  requireCanManageClientAccount('clientAccountId'),
+  createScopedUser
+);
+router.post(
+  '/client-accounts/:clientAccountId/users/:userId/assign',
+  requireCanManageClientAccount('clientAccountId'),
+  assignScopedUser
+);
+router.put(
+  '/client-accounts/:clientAccountId/users/:userId',
+  requireCanManageClientAccount('clientAccountId'),
+  updateScopedUser
+);
+router.delete(
+  '/client-accounts/:clientAccountId/users/:userId',
+  requireCanManageClientAccount('clientAccountId'),
+  removeScopedUser
 );
 router.get(
   '/client-accounts/:clientAccountId/numbers',

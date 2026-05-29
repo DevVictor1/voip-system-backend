@@ -7,6 +7,7 @@ const { getClientAccountIdString } = require('../utils/clientOwnership');
 
 const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
 const CLIENT_ACCOUNT_ACTIVITY_LIMIT = 100;
+const SCOPED_ASSIGNABLE_ROLES = new Set(['agent', 'client_admin', 'client_user']);
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -83,9 +84,22 @@ const validateReferencedUser = async ({ userId, clientAccountId, allowDifferentC
   if (!user) return { error: 'Selected user could not be found' };
 
   if (!allowDifferentClientAccounts) {
+    if (!SCOPED_ASSIGNABLE_ROLES.has(String(user.role || '').toLowerCase())) {
+      return { error: 'Selected user has a role that cannot be assigned from this portal' };
+    }
+
     const userClientAccountId = getClientAccountIdString(user.clientAccountId);
     const clientId = getClientAccountIdString(clientAccountId);
     if (userClientAccountId && userClientAccountId !== clientId) {
+      return { error: 'Selected user belongs to another client organization' };
+    }
+
+    const assignedElsewhere = await ClientAccount.exists({
+      _id: { $ne: clientAccountId },
+      assignedUserIds: user._id,
+    });
+
+    if (assignedElsewhere) {
       return { error: 'Selected user belongs to another client organization' };
     }
   }
@@ -110,6 +124,11 @@ const validateReferencedUsers = async ({
   }
 
   if (!allowDifferentClientAccounts) {
+    const privilegedUser = users.find((user) => !SCOPED_ASSIGNABLE_ROLES.has(String(user.role || '').toLowerCase()));
+    if (privilegedUser) {
+      return { error: 'One or more selected users has a role that cannot be assigned from this portal' };
+    }
+
     const clientId = getClientAccountIdString(clientAccountId);
     const blockedUser = users.find((user) => {
       const userClientAccountId = getClientAccountIdString(user.clientAccountId);
@@ -117,6 +136,15 @@ const validateReferencedUsers = async ({
     });
 
     if (blockedUser) {
+      return { error: 'One or more selected users belongs to another client organization' };
+    }
+
+    const assignedElsewhere = await ClientAccount.exists({
+      _id: { $ne: clientAccountId },
+      assignedUserIds: { $in: normalized.ids },
+    });
+
+    if (assignedElsewhere) {
       return { error: 'One or more selected users belongs to another client organization' };
     }
   }
@@ -442,6 +470,16 @@ exports.assignResellerPortalClientAdmin = async (req, res) => {
     const nextAdminId = userLookup.user?._id ? String(userLookup.user._id) : '';
 
     clientAccount.adminUserId = userLookup.user?._id || null;
+    if (userLookup.user?._id) {
+      userLookup.user.clientAccountId = clientAccount._id;
+      await userLookup.user.save();
+      const currentAssignedIds = Array.isArray(clientAccount.assignedUserIds)
+        ? clientAccount.assignedUserIds.map((value) => String(value))
+        : [];
+      if (!currentAssignedIds.includes(String(userLookup.user._id))) {
+        clientAccount.assignedUserIds = [...currentAssignedIds, userLookup.user._id];
+      }
+    }
 
     if (currentAdminId !== nextAdminId) {
       appendActivityEntry(
@@ -532,6 +570,22 @@ exports.updateResellerPortalAssignedUsers = async (req, res) => {
     }
 
     await clientAccount.save();
+    const retainedUserIds = [
+      ...(assignedUsersLookup.userIds || []),
+      ...(clientAccount.adminUserId ? [clientAccount.adminUserId] : []),
+    ];
+
+    await User.updateMany(
+      { _id: { $in: retainedUserIds } },
+      { clientAccountId: clientAccount._id }
+    );
+    await User.updateMany(
+      {
+        clientAccountId: clientAccount._id,
+        _id: { $nin: retainedUserIds },
+      },
+      { clientAccountId: null }
+    );
 
     const populatedAccount = await findPopulatedClientAccountById(clientAccount._id);
     return res.json({ clientAccount: sanitizeClientAccount(populatedAccount) });

@@ -21,6 +21,13 @@ const {
   listClientNumbers,
   updateClientNumber,
 } = require('../controllers/clientNumberOwnershipController');
+const {
+  assignScopedUser,
+  createScopedUser,
+  listScopedUsers,
+  removeScopedUser,
+  updateScopedUser,
+} = require('../controllers/scopedUserManagementController');
 const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -42,6 +49,11 @@ router.patch('/client-accounts/:id/status', updateClientAccountStatus);
 router.post('/client-accounts/:id/notes', addClientAccountNote);
 router.delete('/client-accounts/:id/notes/:noteId', deleteClientAccountNote);
 router.get('/client-numbers', listAllClientNumbers);
+router.get('/client-accounts/:clientAccountId/users', listScopedUsers);
+router.post('/client-accounts/:clientAccountId/users', createScopedUser);
+router.post('/client-accounts/:clientAccountId/users/:userId/assign', assignScopedUser);
+router.put('/client-accounts/:clientAccountId/users/:userId', updateScopedUser);
+router.delete('/client-accounts/:clientAccountId/users/:userId', removeScopedUser);
 router.get('/client-accounts/:clientAccountId/numbers', listClientNumbers);
 router.post('/client-accounts/:clientAccountId/numbers', createClientNumber);
 router.put('/client-accounts/:clientAccountId/numbers/:numberId', updateClientNumber);
