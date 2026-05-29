@@ -1,5 +1,6 @@
 ﻿const Call = require('../models/Call');
 const Contact = require('../models/Contact');
+const ClientPhoneNumber = require('../models/ClientPhoneNumber');
 const PortingNumber = require('../models/PortingNumber');
 const User = require('../models/User');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
@@ -88,6 +89,63 @@ const isVoiceCapableNumber = (numberRecord) => {
   return capabilities.includes('voice');
 };
 
+const isClientVoiceCapableNumber = (numberRecord) => (
+  String(numberRecord?.status || '').trim().toLowerCase() === 'active'
+  && Boolean(numberRecord?.capabilities?.voice)
+);
+
+const sanitizeCallerIdOption = (phoneNumber, source = 'global') => ({
+  phoneNumber: String(phoneNumber || '').trim(),
+  source,
+});
+
+const dedupeCallerIdOptions = (options = []) => {
+  const seen = new Set();
+  return options.filter((option) => {
+    const digits = stripPhoneFormatting(option?.phoneNumber);
+    if (!digits || seen.has(digits)) return false;
+    seen.add(digits);
+    return true;
+  });
+};
+
+const getGlobalCallerIdOptions = async () => {
+  const defaultCallerId = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
+  const availableNumbers = await PortingNumber.find({
+    phoneNumber: { $type: 'string', $ne: '' },
+  }).select('phoneNumber capabilities');
+
+  const options = availableNumbers
+    .filter(isVoiceCapableNumber)
+    .map((numberRecord) => sanitizeCallerIdOption(numberRecord.phoneNumber, 'global_number'))
+    .filter((option) => option.phoneNumber);
+
+  if (defaultCallerId) {
+    options.unshift(sanitizeCallerIdOption(defaultCallerId, 'default'));
+  }
+
+  return dedupeCallerIdOptions(options);
+};
+
+const getClientCallerIdOptions = async (clientAccountId) => {
+  if (!clientAccountId) return [];
+
+  const clientNumbers = await ClientPhoneNumber.find({
+    clientAccountId,
+    status: 'active',
+    'capabilities.voice': true,
+    phoneNumber: { $type: 'string', $ne: '' },
+  })
+    .select('phoneNumber label capabilities status')
+    .sort({ updatedAt: -1, createdAt: -1 });
+
+  return dedupeCallerIdOptions(
+    clientNumbers
+      .filter(isClientVoiceCapableNumber)
+      .map((numberRecord) => sanitizeCallerIdOption(numberRecord.phoneNumber, 'client_number'))
+  );
+};
+
 const resolveRequestedCallerId = async (rawCallerId) => {
   const selectedCallerId = String(rawCallerId || '').trim();
   const defaultCallerId = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
@@ -111,6 +169,23 @@ const resolveRequestedCallerId = async (rawCallerId) => {
 
   if (matchedNumber?.phoneNumber) {
     return matchedNumber.phoneNumber;
+  }
+
+  // Stage 2 caller ID foundation: allow active client-owned voice numbers
+  // selected by the portal UI, without enforcing tenant caller ID scoping yet.
+  const clientNumbers = await ClientPhoneNumber.find({
+    status: 'active',
+    'capabilities.voice': true,
+    phoneNumber: { $type: 'string', $ne: '' },
+  }).select('phoneNumber capabilities status');
+
+  const matchedClientNumber = clientNumbers.find((numberRecord) => (
+    isClientVoiceCapableNumber(numberRecord)
+    && doPhoneNumbersMatch(numberRecord.phoneNumber, selectedCallerId)
+  ));
+
+  if (matchedClientNumber?.phoneNumber) {
+    return matchedClientNumber.phoneNumber;
   }
 
   return defaultCallerId;
@@ -935,6 +1010,28 @@ exports.makeCall = async (req, res) => {
   return res.json({
     message: 'Use browser softphone instead'
   });
+};
+
+// ==========================
+// 📞 CALLER ID OPTIONS
+// ==========================
+exports.getAvailableCallerIds = async (req, res) => {
+  try {
+    const clientAccountId = req.accountContext?.primaryClientAccountId
+      || req.accountContext?.selectedClientAccountId
+      || null;
+    const clientOptions = await getClientCallerIdOptions(clientAccountId);
+    const globalOptions = await getGlobalCallerIdOptions();
+    const options = clientOptions.length > 0 ? clientOptions : globalOptions;
+
+    return res.json({
+      callerIds: options,
+      source: clientOptions.length > 0 ? 'client' : 'global_fallback',
+    });
+  } catch (error) {
+    console.error('Caller ID options error:', error);
+    return res.status(500).json({ error: 'Failed to load caller ID options' });
+  }
 };
 
 // ==========================

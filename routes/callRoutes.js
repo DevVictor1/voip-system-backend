@@ -2,12 +2,15 @@ const express = require('express');
 const router = express.Router();
 
 const callController = require('../controllers/callController');
+const { authenticate } = require('../middleware/authMiddleware');
+const { resolveAccountContext } = require('../middleware/accountContextMiddleware');
 
 // 📞 MAKE CALL
 router.post('/call', callController.makeCall);
 
 // 📊 GET ALL CALLS
 router.get('/logs', callController.getCalls);
+router.get('/caller-ids', authenticate, resolveAccountContext, callController.getAvailableCallerIds);
 
 // 🔥 NEW: GET CALLS BY NUMBER
 router.get('/by-number/:phone', callController.getCallsByNumber);
