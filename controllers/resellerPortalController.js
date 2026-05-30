@@ -5,7 +5,7 @@ const User = require('../models/User');
 const { isPlatformAdmin } = require('../utils/accessControl');
 const { getClientAccountIdString } = require('../utils/clientOwnership');
 
-const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
+const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending', 'archived']);
 const CLIENT_ACCOUNT_ACTIVITY_LIMIT = 100;
 const SCOPED_ASSIGNABLE_ROLES = new Set(['agent', 'client_admin', 'client_user']);
 
@@ -73,6 +73,10 @@ const populateClientAccountQuery = (query) => query
 
 const findPopulatedClientAccountById = (clientAccountId) => (
   populateClientAccountQuery(ClientAccount.findById(clientAccountId))
+);
+
+const shouldIncludeArchived = (req) => (
+  String(req.query?.includeArchived || '').trim().toLowerCase() === 'true'
 );
 
 const validateReferencedUser = async ({ userId, clientAccountId, allowDifferentClientAccounts = false }) => {
@@ -214,6 +218,8 @@ const sanitizeClientAccount = (account) => {
       : null,
     companyName: account.companyName || '',
     accountStatus: account.accountStatus || 'pending',
+    archivedAt: account.archivedAt || null,
+    archivedBy: account.archivedBy ? String(account.archivedBy) : null,
     plan: account.plan || '',
     seatLimit: Number.isFinite(account.seatLimit) ? account.seatLimit : 0,
     seatUsage: assignedUsers.length,
@@ -281,8 +287,13 @@ exports.getResellerPortalSummary = async (req, res) => {
       });
     }
 
+    const clientAccountQuery = reseller?._id ? { resellerId: reseller._id } : {};
+    if (!shouldIncludeArchived(req)) {
+      clientAccountQuery.accountStatus = { $ne: 'archived' };
+    }
+
     const clientAccounts = await populateClientAccountQuery(
-      ClientAccount.find(reseller?._id ? { resellerId: reseller._id } : {})
+      ClientAccount.find(clientAccountQuery)
         .sort({ createdAt: -1 })
     );
 
@@ -327,6 +338,9 @@ exports.listResellerPortalClientAccounts = async (req, res) => {
     }
 
     const query = resellerId ? { resellerId } : {};
+    if (!shouldIncludeArchived(req)) {
+      query.accountStatus = { $ne: 'archived' };
+    }
     const clientAccounts = await populateClientAccountQuery(
       ClientAccount.find(query).sort({ createdAt: -1 })
     );
@@ -415,6 +429,12 @@ exports.updateResellerPortalClientAccount = async (req, res) => {
       CLIENT_ACCOUNT_STATUSES,
       clientAccount.accountStatus || 'pending'
     );
+    if (nextStatus === 'archived' && clientAccount.accountStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Archive Organization to archive safely.' });
+    }
+    if (clientAccount.accountStatus === 'archived' && nextStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Restore Organization to restore safely.' });
+    }
     const nextPlan = normalizeTrimmedText(req.body?.plan ?? clientAccount.plan);
     const nextSeatLimit = normalizeNonNegativeInteger(req.body?.seatLimit, clientAccount.seatLimit || 0);
 
@@ -446,6 +466,62 @@ exports.updateResellerPortalClientAccount = async (req, res) => {
   } catch (error) {
     console.error('Reseller portal update client error:', error);
     return res.status(500).json({ error: 'Failed to update client organization' });
+  }
+};
+
+exports.archiveResellerPortalClientAccount = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.clientAccountId);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client organization not found' });
+    }
+
+    if (clientAccount.accountStatus !== 'archived') {
+      clientAccount.accountStatus = 'archived';
+      clientAccount.archivedAt = new Date();
+      clientAccount.archivedBy = req.user?._id || null;
+      appendActivityEntry(
+        clientAccount,
+        'account_archived',
+        'Client organization archived from the partner console',
+        req.user
+      );
+      await clientAccount.save();
+    }
+
+    const populatedAccount = await findPopulatedClientAccountById(clientAccount._id);
+    return res.json({ clientAccount: sanitizeClientAccount(populatedAccount) });
+  } catch (error) {
+    console.error('Reseller portal archive client error:', error);
+    return res.status(500).json({ error: 'Failed to archive client organization' });
+  }
+};
+
+exports.restoreResellerPortalClientAccount = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.clientAccountId);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client organization not found' });
+    }
+
+    if (clientAccount.accountStatus === 'archived' || clientAccount.archivedAt || clientAccount.archivedBy) {
+      clientAccount.accountStatus = 'active';
+      clientAccount.archivedAt = null;
+      clientAccount.archivedBy = null;
+      appendActivityEntry(
+        clientAccount,
+        'account_restored',
+        'Client organization restored from the partner console',
+        req.user
+      );
+      await clientAccount.save();
+    }
+
+    const populatedAccount = await findPopulatedClientAccountById(clientAccount._id);
+    return res.json({ clientAccount: sanitizeClientAccount(populatedAccount) });
+  } catch (error) {
+    console.error('Reseller portal restore client error:', error);
+    return res.status(500).json({ error: 'Failed to restore client organization' });
   }
 };
 

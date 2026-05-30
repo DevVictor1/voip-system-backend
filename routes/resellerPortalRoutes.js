@@ -1,11 +1,13 @@
 const express = require('express');
 const {
   assignResellerPortalClientAdmin,
+  archiveResellerPortalClientAccount,
   createResellerPortalClientAccount,
   getResellerPortalClientAccountDetails,
   getResellerPortalSummary,
   listResellerPortalAssignableUsers,
   listResellerPortalClientAccounts,
+  restoreResellerPortalClientAccount,
   updateResellerPortalAssignedUsers,
   updateResellerPortalClientAccount,
 } = require('../controllers/resellerPortalController');
@@ -46,6 +48,18 @@ router.put(
   '/client-accounts/:clientAccountId',
   requireCanManageClientAccount('clientAccountId'),
   updateResellerPortalClientAccount
+);
+router.patch(
+  '/client-accounts/:clientAccountId/archive',
+  requireResellerContext,
+  requireCanManageClientAccount('clientAccountId'),
+  archiveResellerPortalClientAccount
+);
+router.patch(
+  '/client-accounts/:clientAccountId/restore',
+  requireResellerContext,
+  requireCanManageClientAccount('clientAccountId'),
+  restoreResellerPortalClientAccount
 );
 router.patch(
   '/client-accounts/:clientAccountId/admin-user',

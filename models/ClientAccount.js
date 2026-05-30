@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const CLIENT_ACCOUNT_STATUSES = ['active', 'inactive', 'suspended', 'pending'];
+const CLIENT_ACCOUNT_STATUSES = ['active', 'inactive', 'suspended', 'pending', 'archived'];
 const CLIENT_NUMBER_TYPES = ['voice', 'sms', 'voice+sms'];
 const CLIENT_NUMBER_STATUSES = ['active', 'pending', 'porting', 'inactive'];
 const CLIENT_ONBOARDING_CHECKLIST_STATUSES = ['not_started', 'in_progress', 'ready'];
@@ -167,6 +167,15 @@ const clientAccountSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.ObjectId],
       ref: 'User',
       default: [],
+    },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
+    archivedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
     adminNotes: {
       type: [clientAccountAdminNoteSchema],

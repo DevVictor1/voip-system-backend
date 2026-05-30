@@ -3,8 +3,8 @@ const Reseller = require('../models/Reseller');
 const ClientAccount = require('../models/ClientAccount');
 const User = require('../models/User');
 
-const RESELLER_STATUSES = new Set(['active', 'inactive', 'pending']);
-const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending']);
+const RESELLER_STATUSES = new Set(['active', 'inactive', 'pending', 'archived']);
+const CLIENT_ACCOUNT_STATUSES = new Set(['active', 'inactive', 'suspended', 'pending', 'archived']);
 const CLIENT_NUMBER_TYPES = new Set(['voice', 'sms', 'voice+sms']);
 const CLIENT_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive']);
 const CLIENT_ONBOARDING_STATUSES = new Set(['not_started', 'in_progress', 'ready']);
@@ -273,6 +273,21 @@ const appendResellerActivityEntries = (reseller, entries = []) => {
   reseller.activityLog = [...currentEntries, ...normalizedEntries].slice(-RESELLER_ACTIVITY_LIMIT);
 };
 
+const shouldIncludeArchived = (req) => (
+  String(req.query?.includeArchived || '').trim().toLowerCase() === 'true'
+);
+
+const populateResellerById = (resellerId) => Reseller.findById(resellerId)
+  .populate('assignedUserIds', 'name email role')
+  .populate('archivedBy', 'name email role');
+
+const populateClientAccountById = (clientAccountId) => ClientAccount.findById(clientAccountId)
+  .populate('resellerId', 'name companyName status')
+  .populate('adminUserId', 'name email role')
+  .populate('assignedUserIds', 'name email role')
+  .populate('assignedNumberRecords.assignedUserId', 'name email role')
+  .populate('archivedBy', 'name email role');
+
 const buildComparableAssignedNumberRecord = (record = {}) => ({
   phoneNumber: normalizeTrimmedText(record?.phoneNumber),
   label: normalizeTrimmedText(record?.label),
@@ -334,6 +349,15 @@ const sanitizeReseller = (reseller) => ({
           role: user.role || '',
         }))
     : [],
+  archivedAt: reseller.archivedAt || null,
+  archivedBy: reseller.archivedBy?._id
+    ? {
+        id: String(reseller.archivedBy._id),
+        name: reseller.archivedBy.name || '',
+        email: reseller.archivedBy.email || '',
+        role: reseller.archivedBy.role || '',
+      }
+    : (reseller.archivedBy ? String(reseller.archivedBy) : null),
   adminNotes: Array.isArray(reseller.adminNotes)
     ? reseller.adminNotes.map((note) => ({
         id: note?._id ? String(note._id) : '',
@@ -401,6 +425,15 @@ const sanitizeClientAccount = (account) => ({
           role: user.role || '',
         }))
     : [],
+  archivedAt: account.archivedAt || null,
+  archivedBy: account.archivedBy?._id
+    ? {
+        id: String(account.archivedBy._id),
+        name: account.archivedBy.name || '',
+        email: account.archivedBy.email || '',
+        role: account.archivedBy.role || '',
+      }
+    : (account.archivedBy ? String(account.archivedBy) : null),
   adminNotes: Array.isArray(account.adminNotes)
     ? account.adminNotes.map((note) => ({
         id: note?._id ? String(note._id) : '',
@@ -498,10 +531,12 @@ const validateReferencedReseller = async (resellerId) => {
   return { reseller };
 };
 
-exports.listResellers = async (_req, res) => {
+exports.listResellers = async (req, res) => {
   try {
-    const resellers = await Reseller.find({})
+    const query = shouldIncludeArchived(req) ? {} : { status: { $ne: 'archived' } };
+    const resellers = await Reseller.find(query)
       .populate('assignedUserIds', 'name email role')
+      .populate('archivedBy', 'name email role')
       .sort({ createdAt: -1 });
     return res.json({
       resellers: resellers.map(sanitizeReseller),
@@ -514,8 +549,7 @@ exports.listResellers = async (_req, res) => {
 
 exports.getReseller = async (req, res) => {
   try {
-    const reseller = await Reseller.findById(req.params.id)
-      .populate('assignedUserIds', 'name email role');
+    const reseller = await populateResellerById(req.params.id);
     if (!reseller) {
       return res.status(404).json({ error: 'Reseller not found' });
     }
@@ -558,8 +592,7 @@ exports.createReseller = async (req, res) => {
       ],
     });
 
-    const populatedReseller = await Reseller.findById(reseller._id)
-      .populate('assignedUserIds', 'name email role');
+    const populatedReseller = await populateResellerById(reseller._id);
 
     return res.status(201).json({
       reseller: sanitizeReseller(populatedReseller),
@@ -588,6 +621,13 @@ exports.updateReseller = async (req, res) => {
     const nextContactPhone = normalizeTrimmedText(req.body?.contactPhone ?? reseller.contactPhone);
     const nextStatus = normalizeStatus(req.body?.status ?? reseller.status, RESELLER_STATUSES, reseller.status || 'pending');
     const nextNotes = normalizeTrimmedText(req.body?.notes ?? reseller.notes);
+
+    if (nextStatus === 'archived' && reseller.status !== 'archived') {
+      return res.status(400).json({ error: 'Use Archive Reseller Partner to archive safely.' });
+    }
+    if (reseller.status === 'archived' && nextStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Restore Reseller Partner to restore safely.' });
+    }
     const assignedUserIdsInput = req.body?.assignedUserIds !== undefined
       ? req.body.assignedUserIds
       : reseller.assignedUserIds;
@@ -640,8 +680,7 @@ exports.updateReseller = async (req, res) => {
 
     await reseller.save();
 
-    const populatedReseller = await Reseller.findById(reseller._id)
-      .populate('assignedUserIds', 'name email role');
+    const populatedReseller = await populateResellerById(reseller._id);
 
     return res.json({
       reseller: sanitizeReseller(populatedReseller),
@@ -679,8 +718,7 @@ exports.addResellerNote = async (req, res) => {
 
     await reseller.save();
 
-    const populatedReseller = await Reseller.findById(reseller._id)
-      .populate('assignedUserIds', 'name email role');
+    const populatedReseller = await populateResellerById(reseller._id);
 
     return res.status(201).json({
       reseller: sanitizeReseller(populatedReseller),
@@ -713,8 +751,7 @@ exports.deleteResellerNote = async (req, res) => {
 
     await reseller.save();
 
-    const populatedReseller = await Reseller.findById(reseller._id)
-      .populate('assignedUserIds', 'name email role');
+    const populatedReseller = await populateResellerById(reseller._id);
 
     return res.json({
       reseller: sanitizeReseller(populatedReseller),
@@ -725,13 +762,76 @@ exports.deleteResellerNote = async (req, res) => {
   }
 };
 
-exports.listClientAccounts = async (_req, res) => {
+exports.archiveReseller = async (req, res) => {
   try {
-    const clientAccounts = await ClientAccount.find({})
+    const reseller = await Reseller.findById(req.params.id);
+    if (!reseller) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    const activeClientCount = await ClientAccount.countDocuments({
+      resellerId: reseller._id,
+      accountStatus: 'active',
+    });
+
+    if (activeClientCount > 0) {
+      return res.status(409).json({
+        error: 'This reseller partner still has active client organizations. Archive or reassign those organizations first.',
+      });
+    }
+
+    if (reseller.status !== 'archived') {
+      reseller.status = 'archived';
+      reseller.archivedAt = new Date();
+      reseller.archivedBy = req.user?._id || null;
+      appendResellerActivityEntries(reseller, [
+        buildActivityEntry('reseller_archived', 'Reseller partner archived', req.user),
+      ]);
+      await reseller.save();
+    }
+
+    const populatedReseller = await populateResellerById(reseller._id);
+    return res.json({ reseller: sanitizeReseller(populatedReseller) });
+  } catch (error) {
+    console.error('Admin portal archive reseller error:', error);
+    return res.status(500).json({ error: 'Failed to archive reseller partner' });
+  }
+};
+
+exports.restoreReseller = async (req, res) => {
+  try {
+    const reseller = await Reseller.findById(req.params.id);
+    if (!reseller) {
+      return res.status(404).json({ error: 'Reseller not found' });
+    }
+
+    if (reseller.status === 'archived' || reseller.archivedAt || reseller.archivedBy) {
+      reseller.status = 'active';
+      reseller.archivedAt = null;
+      reseller.archivedBy = null;
+      appendResellerActivityEntries(reseller, [
+        buildActivityEntry('reseller_restored', 'Reseller partner restored', req.user),
+      ]);
+      await reseller.save();
+    }
+
+    const populatedReseller = await populateResellerById(reseller._id);
+    return res.json({ reseller: sanitizeReseller(populatedReseller) });
+  } catch (error) {
+    console.error('Admin portal restore reseller error:', error);
+    return res.status(500).json({ error: 'Failed to restore reseller partner' });
+  }
+};
+
+exports.listClientAccounts = async (req, res) => {
+  try {
+    const query = shouldIncludeArchived(req) ? {} : { accountStatus: { $ne: 'archived' } };
+    const clientAccounts = await ClientAccount.find(query)
       .populate('resellerId', 'name companyName status')
       .populate('adminUserId', 'name email role')
       .populate('assignedUserIds', 'name email role')
       .populate('assignedNumberRecords.assignedUserId', 'name email role')
+      .populate('archivedBy', 'name email role')
       .sort({ createdAt: -1 });
 
     return res.json({
@@ -745,11 +845,7 @@ exports.listClientAccounts = async (_req, res) => {
 
 exports.getClientAccount = async (req, res) => {
   try {
-    const clientAccount = await ClientAccount.findById(req.params.id)
-      .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role')
-      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+    const clientAccount = await populateClientAccountById(req.params.id);
 
     if (!clientAccount) {
       return res.status(404).json({ error: 'Client organization not found' });
@@ -826,11 +922,7 @@ exports.createClientAccount = async (req, res) => {
       ),
     });
 
-    const populatedAccount = await ClientAccount.findById(clientAccount._id)
-      .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role')
-      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
 
     return res.status(201).json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -898,6 +990,12 @@ exports.updateClientAccount = async (req, res) => {
       CLIENT_ACCOUNT_STATUSES,
       clientAccount.accountStatus || 'pending'
     );
+    if (nextStatus === 'archived' && clientAccount.accountStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Archive Organization to archive safely.' });
+    }
+    if (clientAccount.accountStatus === 'archived' && nextStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Restore Organization to restore safely.' });
+    }
     const nextAssignedNumbers = assignedNumberRecordsInput.length > 0
       ? assignedNumberRecordsInput.map((record) => record.phoneNumber)
       : normalizeAssignedNumbers(
@@ -963,11 +1061,7 @@ exports.updateClientAccount = async (req, res) => {
 
     await clientAccount.save();
 
-    const populatedAccount = await ClientAccount.findById(clientAccount._id)
-      .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role')
-      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
 
     return res.json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -995,6 +1089,13 @@ exports.updateClientAccountStatus = async (req, res) => {
       return res.status(400).json({ error: 'accountStatus is required' });
     }
 
+    if (nextStatus === 'archived' && clientAccount.accountStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Archive Organization to archive safely.' });
+    }
+    if (clientAccount.accountStatus === 'archived' && nextStatus !== 'archived') {
+      return res.status(400).json({ error: 'Use Restore Organization to restore safely.' });
+    }
+
     const previousStatus = clientAccount.accountStatus;
     clientAccount.accountStatus = nextStatus;
     if (String(previousStatus || '') !== String(nextStatus || '')) {
@@ -1008,11 +1109,7 @@ exports.updateClientAccountStatus = async (req, res) => {
     }
     await clientAccount.save();
 
-    const populatedAccount = await ClientAccount.findById(clientAccount._id)
-      .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role')
-      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
 
     return res.json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -1023,11 +1120,61 @@ exports.updateClientAccountStatus = async (req, res) => {
   }
 };
 
+exports.archiveClientAccount = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.id);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client organization not found' });
+    }
+
+    if (clientAccount.accountStatus !== 'archived') {
+      clientAccount.accountStatus = 'archived';
+      clientAccount.archivedAt = new Date();
+      clientAccount.archivedBy = req.user?._id || null;
+      appendActivityEntries(clientAccount, [
+        buildActivityEntry('account_archived', 'Client organization archived', req.user),
+      ]);
+      await clientAccount.save();
+    }
+
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
+    return res.json({ clientAccount: sanitizeClientAccount(populatedAccount) });
+  } catch (error) {
+    console.error('Admin portal archive client account error:', error);
+    return res.status(500).json({ error: 'Failed to archive client organization' });
+  }
+};
+
+exports.restoreClientAccount = async (req, res) => {
+  try {
+    const clientAccount = await ClientAccount.findById(req.params.id);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client organization not found' });
+    }
+
+    if (clientAccount.accountStatus === 'archived' || clientAccount.archivedAt || clientAccount.archivedBy) {
+      clientAccount.accountStatus = 'active';
+      clientAccount.archivedAt = null;
+      clientAccount.archivedBy = null;
+      appendActivityEntries(clientAccount, [
+        buildActivityEntry('account_restored', 'Client organization restored', req.user),
+      ]);
+      await clientAccount.save();
+    }
+
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
+    return res.json({ clientAccount: sanitizeClientAccount(populatedAccount) });
+  } catch (error) {
+    console.error('Admin portal restore client account error:', error);
+    return res.status(500).json({ error: 'Failed to restore client organization' });
+  }
+};
+
 exports.getResellerOverview = async (_req, res) => {
   try {
     const [resellerCount, clientAccountCount] = await Promise.all([
-      Reseller.countDocuments({}),
-      ClientAccount.countDocuments({}),
+      Reseller.countDocuments({ status: { $ne: 'archived' } }),
+      ClientAccount.countDocuments({ accountStatus: { $ne: 'archived' } }),
     ]);
 
     return res.json({
@@ -1070,11 +1217,7 @@ exports.addClientAccountNote = async (req, res) => {
 
     await clientAccount.save();
 
-    const populatedAccount = await ClientAccount.findById(clientAccount._id)
-      .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role')
-      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
 
     return res.status(201).json({
       clientAccount: sanitizeClientAccount(populatedAccount),
@@ -1107,11 +1250,7 @@ exports.deleteClientAccountNote = async (req, res) => {
 
     await clientAccount.save();
 
-    const populatedAccount = await ClientAccount.findById(clientAccount._id)
-      .populate('resellerId', 'name companyName status')
-      .populate('adminUserId', 'name email role')
-      .populate('assignedUserIds', 'name email role')
-      .populate('assignedNumberRecords.assignedUserId', 'name email role');
+    const populatedAccount = await populateClientAccountById(clientAccount._id);
 
     return res.json({
       clientAccount: sanitizeClientAccount(populatedAccount),

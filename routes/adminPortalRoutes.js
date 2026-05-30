@@ -4,6 +4,8 @@ const {
   getReseller,
   createReseller,
   updateReseller,
+  archiveReseller,
+  restoreReseller,
   addResellerNote,
   deleteResellerNote,
   listClientAccounts,
@@ -11,6 +13,8 @@ const {
   createClientAccount,
   updateClientAccount,
   updateClientAccountStatus,
+  archiveClientAccount,
+  restoreClientAccount,
   addClientAccountNote,
   deleteClientAccountNote,
 } = require('../controllers/adminPortalController');
@@ -38,6 +42,8 @@ router.get('/resellers', listResellers);
 router.get('/resellers/:id', getReseller);
 router.post('/resellers', createReseller);
 router.put('/resellers/:id', updateReseller);
+router.patch('/resellers/:id/archive', archiveReseller);
+router.patch('/resellers/:id/restore', restoreReseller);
 router.post('/resellers/:id/notes', addResellerNote);
 router.delete('/resellers/:id/notes/:noteId', deleteResellerNote);
 
@@ -46,6 +52,8 @@ router.get('/client-accounts/:id', getClientAccount);
 router.post('/client-accounts', createClientAccount);
 router.put('/client-accounts/:id', updateClientAccount);
 router.patch('/client-accounts/:id/status', updateClientAccountStatus);
+router.patch('/client-accounts/:id/archive', archiveClientAccount);
+router.patch('/client-accounts/:id/restore', restoreClientAccount);
 router.post('/client-accounts/:id/notes', addClientAccountNote);
 router.delete('/client-accounts/:id/notes/:noteId', deleteClientAccountNote);
 router.get('/client-numbers', listAllClientNumbers);

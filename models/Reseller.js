@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const RESELLER_STATUSES = ['active', 'inactive', 'pending'];
+const RESELLER_STATUSES = ['active', 'inactive', 'pending', 'archived'];
 
 const resellerAdminNoteSchema = new mongoose.Schema(
   {
@@ -94,6 +94,15 @@ const resellerSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.ObjectId],
       ref: 'User',
       default: [],
+    },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
+    archivedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
     adminNotes: {
       type: [resellerAdminNoteSchema],
