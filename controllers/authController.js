@@ -325,11 +325,14 @@ const hasInvalidDepartmentInput = (department) => {
 
 const buildUserPayload = ({
   name,
+  firstName,
+  lastName,
   email,
   role,
   agentId,
   extension,
   didNumber,
+  callerId,
   department,
   isActive,
   status,
@@ -345,11 +348,14 @@ const buildUserPayload = ({
 
   return {
     name: String(name || '').trim(),
+    firstName: normalizeOptionalText(firstName),
+    lastName: normalizeOptionalText(lastName),
     email: String(email || '').trim().toLowerCase(),
     role: normalizedRole,
     agentId: normalizedRole === 'agent' ? normalizedAgentId : normalizedAgentId,
     extension: normalizeOptionalText(extension),
     didNumber: normalizeOptionalText(didNumber),
+    callerId: normalizeOptionalText(callerId),
     department: normalizedDepartment,
     isActive: isActive === false ? false : true,
     status: normalizeStatus(status),
@@ -411,6 +417,66 @@ exports.me = async (req, res) => {
   return res.json({
     user: sanitizeUser(req.user),
   });
+};
+
+exports.updateMyProfile = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const firstName = normalizeOptionalText(req.body?.firstName);
+    const lastName = normalizeOptionalText(req.body?.lastName);
+    const fallbackName = normalizeOptionalText(req.body?.name);
+    const resolvedName = normalizeOptionalText(`${firstName} ${lastName}`) || fallbackName || req.user.name;
+    const email = String(req.body?.username || req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+
+    if (!resolvedName) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    if (!email) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+
+    if (password && password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const existingUser = await User.findOne({
+      email,
+      _id: { $ne: req.user._id },
+    });
+
+    if (existingUser) {
+      return res.status(409).json({ error: 'Username is already in use' });
+    }
+
+    req.user.name = resolvedName;
+    req.user.firstName = firstName;
+    req.user.lastName = lastName;
+    req.user.email = email;
+    req.user.callerId = normalizeOptionalText(req.body?.callerId);
+    req.user.didNumber = normalizeOptionalText(req.body?.didNumber);
+
+    if (password) {
+      req.user.password = password;
+    }
+
+    await req.user.save();
+
+    return res.json({
+      user: sanitizeUser(req.user),
+      message: 'Profile updated successfully',
+    });
+  } catch (error) {
+    console.error('Auth update profile error:', error);
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({ error: buildDuplicateErrorMessage(error) });
+    }
+    return res.status(500).json({ error: 'Failed to update profile' });
+  }
 };
 
 exports.listTeammates = async (req, res) => {

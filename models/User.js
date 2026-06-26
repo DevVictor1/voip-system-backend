@@ -14,6 +14,16 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    firstName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    lastName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     email: {
       type: String,
       required: true,
@@ -47,6 +57,11 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
     didNumber: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    callerId: {
       type: String,
       default: '',
       trim: true,
@@ -138,12 +153,15 @@ userSchema.methods.toSafeObject = function toSafeObject() {
     return {
       id: this._id,
       name: this.name,
+      firstName: this.firstName || '',
+      lastName: this.lastName || '',
       email: this.email,
       role: this.role,
       clientAccountId: this.clientAccountId ? String(this.clientAccountId) : null,
       agentId: this.agentId,
       extension: this.extension || '',
       didNumber: this.didNumber || '',
+      callerId: this.callerId || '',
       department: this.department,
       isActive: this.isActive,
       status: this.status || 'offline',

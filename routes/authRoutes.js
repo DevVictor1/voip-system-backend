@@ -2,6 +2,7 @@ const express = require('express');
 const {
   login,
   me,
+  updateMyProfile,
   listTeammates,
   listAgentStatus,
   updateMyAvailabilityStatus,
@@ -21,6 +22,7 @@ const router = express.Router();
 
 router.post('/login', login);
 router.get('/me', authenticate, me);
+router.patch('/me/profile', authenticate, updateMyProfile);
 router.patch('/me/availability-status', authenticate, updateMyAvailabilityStatus);
 router.patch('/me/avatar', authenticate, updateMyAvatar);
 router.patch('/me/favorites', authenticate, toggleMyFavoriteConversation);
