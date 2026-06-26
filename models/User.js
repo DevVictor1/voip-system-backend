@@ -41,6 +41,16 @@ const userSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    extension: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    didNumber: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     department: {
       type: String,
       enum: USER_DEPARTMENTS,
@@ -132,6 +142,8 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       role: this.role,
       clientAccountId: this.clientAccountId ? String(this.clientAccountId) : null,
       agentId: this.agentId,
+      extension: this.extension || '',
+      didNumber: this.didNumber || '',
       department: this.department,
       isActive: this.isActive,
       status: this.status || 'offline',

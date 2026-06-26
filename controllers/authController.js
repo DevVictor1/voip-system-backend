@@ -37,6 +37,8 @@ const sanitizeTeammate = (user) => ({
   name: user.name,
   role: user.role,
   agentId: user.agentId,
+  extension: user.extension || '',
+  didNumber: user.didNumber || '',
   department: user.department,
   isActive: user.isActive,
   status: user.status || 'offline',
@@ -268,6 +270,10 @@ const normalizeNonNegativeInteger = (value, fallback) => {
   return Math.max(0, Math.floor(parsed));
 };
 
+const normalizeOptionalText = (value) => {
+  return String(value || '').trim();
+};
+
 const normalizeAgentIdSegment = (value) => {
   return String(value || '')
     .trim()
@@ -322,6 +328,8 @@ const buildUserPayload = ({
   email,
   role,
   agentId,
+  extension,
+  didNumber,
   department,
   isActive,
   status,
@@ -340,6 +348,8 @@ const buildUserPayload = ({
     email: String(email || '').trim().toLowerCase(),
     role: normalizedRole,
     agentId: normalizedRole === 'agent' ? normalizedAgentId : normalizedAgentId,
+    extension: normalizeOptionalText(extension),
+    didNumber: normalizeOptionalText(didNumber),
     department: normalizedDepartment,
     isActive: isActive === false ? false : true,
     status: normalizeStatus(status),
@@ -411,7 +421,7 @@ exports.listTeammates = async (req, res) => {
       agentId: { $type: 'string', $ne: '' },
       _id: { $ne: currentUserId },
     })
-      .select('name role agentId department isActive status availabilityStatus maxActiveChats currentActiveChats maxConcurrentCalls isAssignable avatarUrl')
+      .select('name role agentId extension didNumber department isActive status availabilityStatus maxActiveChats currentActiveChats maxConcurrentCalls isAssignable avatarUrl')
       .sort({ name: 1 });
 
     return res.json({
@@ -435,7 +445,7 @@ exports.listAgentStatus = async (_req, res) => {
       agentId: { $type: 'string', $ne: '' },
       isActive: true,
     })
-      .select('name role agentId department isActive status availabilityStatus maxConcurrentCalls isAssignable avatarUrl')
+      .select('name role agentId extension didNumber department isActive status availabilityStatus maxConcurrentCalls isAssignable avatarUrl')
       .sort({ name: 1, createdAt: 1 });
 
     const activeCallCounts = await resolveActiveCallCounts(
@@ -456,6 +466,8 @@ exports.listAgentStatus = async (_req, res) => {
         role: user.role,
         department: user.department,
         agentId,
+        extension: user.extension || '',
+        didNumber: user.didNumber || '',
         isActive: user.isActive !== false,
         isAssignable: typeof user.isAssignable === 'boolean' ? user.isAssignable : true,
         status: user.status || 'offline',
@@ -632,6 +644,8 @@ exports.bootstrapUser = async (req, res) => {
       role,
       agentId,
       department,
+      extension: normalizeOptionalText(req.body?.extension),
+      didNumber: normalizeOptionalText(req.body?.didNumber),
       isActive: true,
       status: normalizeStatus(req.body?.status),
       maxActiveChats: normalizeNonNegativeInteger(req.body?.maxActiveChats, 5),
@@ -785,6 +799,8 @@ exports.updateUser = async (req, res) => {
     user.email = payload.email;
     user.role = payload.role;
     user.agentId = finalAgentId;
+    user.extension = payload.extension;
+    user.didNumber = payload.didNumber;
     user.department = payload.department;
     user.isActive = payload.isActive;
     user.status = payload.status;
