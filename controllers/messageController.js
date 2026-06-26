@@ -6,6 +6,7 @@ const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
 const User = require('../models/User');
 const GroupCalendarEvent = require('../models/GroupCalendarEvent');
+const { isPlatformAdmin } = require('../utils/accessControl');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -63,6 +64,28 @@ const normalizeUserId = async (userId) => {
 };
 
 const resolveRole = (role) => (role === 'admin' ? 'admin' : 'agent');
+const getVerifiedInternalActor = async (rawUserId) => {
+  const normalized = normalizeUserIdValue(rawUserId);
+  if (!normalized) {
+    return { userId: '', role: 'agent', user: null };
+  }
+
+  const user = await User.findOne({
+    agentId: normalized,
+    isActive: true,
+  }).select('agentId role');
+
+  if (!user?.agentId) {
+    return { userId: '', role: 'agent', user: null };
+  }
+
+  return {
+    userId: user.agentId,
+    role: isPlatformAdmin(user) ? 'admin' : 'agent',
+    user,
+  };
+};
+
 const normalizeDepartment = (department) => {
   const normalized = String(department || '').trim().toLowerCase();
   return ['tech', 'support', 'sales'].includes(normalized) ? normalized : '';
@@ -368,6 +391,11 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
   const manageable = !isSystemManagedTeam(team);
   const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team)
     && (role === 'admin' || members.includes(currentUserId));
+  const canManageTeam = manageable && (
+    role === 'admin'
+    || team.createdBy === currentUserId
+    || canManageLegacyCustomTeam
+  );
 
   return {
     conversationId: team.slug || team.id,
@@ -377,13 +405,9 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     createdBy: team.createdBy || '',
     department: normalizeDepartment(team.department) || '',
     isSystemManaged: !manageable,
-    canManage: manageable,
+    canManage: canManageTeam,
     canLeave: manageable && members.includes(currentUserId),
-    canDelete: manageable && (
-      role === 'admin'
-      || team.createdBy === currentUserId
-      || canManageLegacyCustomTeam
-    ),
+    canDelete: canManageTeam,
     managementNote: manageable
       ? (
         isLegacyCustomSystemTeam(team)
@@ -925,8 +949,8 @@ const resolveInternalMessageAccess = async ({
   rawRole,
   allowAdminDelete = false,
 }) => {
-  const userId = await normalizeUserId(rawUserId);
-  const role = resolveRole(rawRole);
+  const actor = await getVerifiedInternalActor(rawUserId);
+  const { userId, role } = actor;
 
   if (!userId) {
     return { error: { status: 400, body: { error: 'Invalid userId' } } };
@@ -968,8 +992,8 @@ const resolveInternalConversationAccess = async ({
   rawUserId,
   rawRole,
 }) => {
-  const userId = await normalizeUserId(rawUserId);
-  const role = resolveRole(rawRole);
+  const actor = await getVerifiedInternalActor(rawUserId);
+  const { userId, role } = actor;
   const normalizedConversationId = String(conversationId || '').trim();
   const normalizedConversationType = String(conversationType || '').trim();
 
@@ -1290,8 +1314,14 @@ const mapFallbackTeam = (team) => ({
 
 exports.getTeams = async (req, res) => {
   try {
-    const teams = await ensureDefaultTeams();
-    return res.json(teams.length > 0 ? teams : TEAM_CHANNELS.map(mapFallbackTeam));
+    const actor = await getVerifiedInternalActor(req.query.userId);
+
+    if (!actor.userId) {
+      return res.status(400).json({ error: 'Invalid userId' });
+    }
+
+    const teams = await getVisibleTeams(actor.userId, actor.role);
+    return res.json(teams);
   } catch (error) {
     console.error('❌ Teams fetch error:', error);
     res.status(500).json({ error: 'Failed to fetch teams' });
@@ -1352,8 +1382,8 @@ exports.startDirectConversation = async (req, res) => {
 
 exports.createTeamConversation = async (req, res) => {
   try {
-    const userId = await normalizeUserId(req.body?.userId);
-    const role = resolveRole(req.body?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const { userId, role } = actor;
     const teamName = String(req.body?.teamName || '').trim();
     const participantIds = Array.isArray(req.body?.participantIds) ? req.body.participantIds : [];
 
@@ -1409,8 +1439,8 @@ exports.createTeamConversation = async (req, res) => {
 exports.deleteTeamConversation = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId || req.query?.userId);
-    const role = resolveRole(req.body?.role || req.query?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId || req.query?.userId);
+    const { userId, role } = actor;
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -1472,8 +1502,8 @@ exports.deleteTeamConversation = async (req, res) => {
 exports.getTeamDetails = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.query.userId);
-    const role = resolveRole(req.query.role);
+    const actor = await getVerifiedInternalActor(req.query.userId);
+    const { userId, role } = actor;
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -1501,8 +1531,8 @@ exports.getTeamDetails = async (req, res) => {
 exports.getTeamCalendarEvents = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.query.userId);
-    const role = resolveRole(req.query.role);
+    const actor = await getVerifiedInternalActor(req.query.userId);
+    const { userId, role } = actor;
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -1539,8 +1569,8 @@ exports.getTeamCalendarEvents = async (req, res) => {
 exports.updateTeamCalendarTimezone = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId);
-    const role = resolveRole(req.body?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const { userId, role } = actor;
     const nextTimezone = String(req.body?.calendarTimezone || '').trim();
 
     if (!userId) {
@@ -1586,8 +1616,8 @@ exports.updateTeamCalendarTimezone = async (req, res) => {
 exports.createTeamCalendarEvent = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId);
-    const role = resolveRole(req.body?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const { userId, role } = actor;
     const title = String(req.body?.title || '').trim();
     const description = String(req.body?.description || '').trim();
     const startAt = toValidDate(req.body?.startAt);
@@ -1639,8 +1669,8 @@ exports.createTeamCalendarEvent = async (req, res) => {
 exports.updateTeamCalendarEvent = async (req, res) => {
   try {
     const { conversationId, eventId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId);
-    const role = resolveRole(req.body?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const { userId, role } = actor;
     const title = String(req.body?.title || '').trim();
     const description = String(req.body?.description || '').trim();
     const startAt = toValidDate(req.body?.startAt);
@@ -1698,8 +1728,8 @@ exports.updateTeamCalendarEvent = async (req, res) => {
 exports.deleteTeamCalendarEvent = async (req, res) => {
   try {
     const { conversationId, eventId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId || req.query?.userId);
-    const role = resolveRole(req.body?.role || req.query?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId || req.query?.userId);
+    const { userId, role } = actor;
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -1744,8 +1774,8 @@ exports.deleteTeamCalendarEvent = async (req, res) => {
 exports.toggleTeamCalendarEventPin = async (req, res) => {
   try {
     const { conversationId, eventId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId);
-    const role = resolveRole(req.body?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const { userId, role } = actor;
     const shouldPin = Boolean(req.body?.pinned);
 
     if (!userId) {
@@ -1803,8 +1833,8 @@ exports.toggleTeamCalendarEventPin = async (req, res) => {
 exports.updateTeamDetails = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId);
-    const role = resolveRole(req.body?.role);
+    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const { userId, role } = actor;
     const nextName = String(req.body?.teamName || '').trim();
     const requestedMemberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : null;
 
@@ -1827,6 +1857,16 @@ exports.updateTeamDetails = async (req, res) => {
 
     if (isSystemManagedTeam(team)) {
       return res.status(400).json({ error: 'This team is managed by workspace defaults' });
+    }
+
+    const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team)
+      && (role === 'admin' || currentMembers.includes(userId));
+    const canManageTeam = role === 'admin'
+      || team.createdBy === userId
+      || canManageLegacyCustomTeam;
+
+    if (!canManageTeam) {
+      return res.status(403).json({ error: 'Only the group creator or an admin can update this group' });
     }
 
     if (nextName) {
@@ -1920,8 +1960,8 @@ exports.leaveTeamConversation = async (req, res) => {
 
 exports.getConversations = async (req, res) => {
   try {
-    const userId = await normalizeUserId(req.query.userId);
-    const role = resolveRole(req.query.role);
+    const actor = await getVerifiedInternalActor(req.query.userId);
+    const { userId, role } = actor;
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -2104,8 +2144,8 @@ exports.getConversations = async (req, res) => {
 
 exports.getThread = async (req, res) => {
   try {
-    const userId = await normalizeUserId(req.query.userId);
-    const role = resolveRole(req.query.role);
+    const actor = await getVerifiedInternalActor(req.query.userId);
+    const { userId, role } = actor;
     const { conversationId } = req.params;
 
     if (!userId) {
@@ -2286,7 +2326,8 @@ exports.sendMessage = async (req, res) => {
       replyTo: rawReplyTo,
     } = req.body || {};
 
-    const userId = await normalizeUserId(rawUserId);
+    const actor = await getVerifiedInternalActor(rawUserId);
+    const { userId, role } = actor;
     const rawMessageText = req.body?.body ?? req.body?.content ?? req.body?.text ?? '';
     const normalizedBody = normalizeMessageBody(rawMessageText);
     const trimmedBody = normalizedBody.trim();
@@ -2363,6 +2404,11 @@ exports.sendMessage = async (req, res) => {
 
       const teamConversation = await ensureTeamConversation(team);
       const teamMembers = await resolveTeamMembers(team);
+
+      if (role !== 'admin' && !teamMembers.includes(userId)) {
+        return res.status(403).json({ error: 'Not allowed' });
+      }
+
       const mentionMetadata = await resolveTeamMentionMetadata(trimmedBody, teamMembers);
 
       payload = {
@@ -2443,7 +2489,8 @@ exports.sendMessage = async (req, res) => {
 exports.markConversationRead = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId || req.query.userId);
+    const actor = await getVerifiedInternalActor(req.body?.userId || req.query.userId);
+    const { userId, role } = actor;
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -2460,13 +2507,22 @@ exports.markConversationRead = async (req, res) => {
         senderId: { $ne: userId },
         readBy: { $ne: userId },
       }
-    ).select('_id conversationType status');
+    ).select('_id conversationType status participants');
 
     if (targetMessages.length === 0) {
       return res.json({ success: true });
     }
 
     const conversationType = targetMessages[0]?.conversationType || 'internal_dm';
+    const canReadConversation = isConversationVisible({
+      conversationType,
+      participants: targetMessages[0]?.participants || [],
+    }, userId, role);
+
+    if (!canReadConversation) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
     const targetIds = targetMessages.map((message) => message._id);
 
     await Message.updateMany(
