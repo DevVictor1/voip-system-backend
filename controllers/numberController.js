@@ -45,7 +45,9 @@ const validatePayload = (payload) => {
 
 exports.getNumbers = async (req, res) => {
   try {
-    const numbers = await PortingNumber.find().sort({ updatedAt: -1, createdAt: -1 });
+    const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
+    const query = includeArchived ? {} : { archivedAt: null };
+    const numbers = await PortingNumber.find(query).sort({ updatedAt: -1, createdAt: -1 });
     res.json(numbers);
   } catch (error) {
     console.error('Numbers fetch error:', error);
@@ -98,15 +100,22 @@ exports.updateNumber = async (req, res) => {
 
 exports.deleteNumber = async (req, res) => {
   try {
-    const deleted = await PortingNumber.findByIdAndDelete(req.params.id);
+    const archived = await PortingNumber.findByIdAndUpdate(
+      req.params.id,
+      {
+        archivedAt: new Date(),
+        archivedBy: req.user?._id || null,
+      },
+      { returnDocument: 'after', runValidators: true }
+    );
 
-    if (!deleted) {
+    if (!archived) {
       return res.status(404).json({ error: 'Number not found' });
     }
 
-    res.json({ success: true });
+    res.json({ success: true, number: archived });
   } catch (error) {
-    console.error('Numbers delete error:', error);
-    res.status(500).json({ error: 'Failed to delete number' });
+    console.error('Numbers archive error:', error);
+    res.status(500).json({ error: 'Failed to archive number' });
   }
 };

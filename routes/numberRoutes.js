@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
 const {
   getNumbers,
@@ -7,6 +8,8 @@ const {
   updateNumber,
   deleteNumber,
 } = require('../controllers/numberController');
+
+router.use(authenticate, requirePlatformAdmin);
 
 router.get('/', getNumbers);
 router.post('/', createNumber);

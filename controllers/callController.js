@@ -4,6 +4,8 @@ const ClientPhoneNumber = require('../models/ClientPhoneNumber');
 const PortingNumber = require('../models/PortingNumber');
 const User = require('../models/User');
 const VoiceResponse = require('twilio').twiml.VoiceResponse;
+const { isPlatformAdmin } = require('../utils/accessControl');
+const { getClientAccountIdString, resolveUserPrimaryClientAccount } = require('../utils/clientOwnership');
 const {
   IVR_DEPARTMENT_ROUTES,
 } = require('../config/chatConfig');
@@ -113,6 +115,8 @@ const getGlobalCallerIdOptions = async () => {
   const defaultCallerId = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
   const availableNumbers = await PortingNumber.find({
     phoneNumber: { $type: 'string', $ne: '' },
+    archivedAt: null,
+    $or: [{ clientAccountId: null }, { clientAccountId: { $exists: false } }],
   }).select('phoneNumber capabilities');
 
   const options = availableNumbers
@@ -127,7 +131,7 @@ const getGlobalCallerIdOptions = async () => {
   return dedupeCallerIdOptions(options);
 };
 
-const getClientCallerIdOptions = async (clientAccountId) => {
+const getClientCallerIdOptions = async (clientAccountId, user = null) => {
   if (!clientAccountId) return [];
 
   const clientNumbers = await ClientPhoneNumber.find({
@@ -136,17 +140,73 @@ const getClientCallerIdOptions = async (clientAccountId) => {
     'capabilities.voice': true,
     phoneNumber: { $type: 'string', $ne: '' },
   })
-    .select('phoneNumber label capabilities status')
+    .select('phoneNumber label capabilities status clientAccountId assignedUserId')
     .sort({ updatedAt: -1, createdAt: -1 });
 
+  const allowedNumbers = [];
+  for (const numberRecord of clientNumbers) {
+    if (await canUserUseClientCallerId(user, numberRecord)) {
+      allowedNumbers.push(numberRecord);
+    }
+  }
+
   return dedupeCallerIdOptions(
-    clientNumbers
+    allowedNumbers
       .filter(isClientVoiceCapableNumber)
       .map((numberRecord) => sanitizeCallerIdOption(numberRecord.phoneNumber, 'client_number'))
   );
 };
 
-const resolveRequestedCallerId = async (rawCallerId) => {
+const findOutboundCallerUser = async (identity) => {
+  const normalizedIdentity = String(identity || '').trim();
+  if (!normalizedIdentity || normalizedIdentity === 'web_user') return null;
+
+  const query = {
+    isActive: true,
+    $or: [{ agentId: normalizedIdentity }],
+  };
+
+  if (/^[a-f\d]{24}$/i.test(normalizedIdentity)) {
+    query.$or.push({ _id: normalizedIdentity });
+  }
+
+  return User.findOne(query).select('_id role agentId clientAccountId');
+};
+
+const canUserUseClientCallerId = async (user, numberRecord) => {
+  if (!user || !numberRecord || !isClientVoiceCapableNumber(numberRecord)) {
+    return false;
+  }
+
+  if (isPlatformAdmin(user)) {
+    return true;
+  }
+
+  const assignedUserId = getClientAccountIdString(numberRecord.assignedUserId);
+  if (assignedUserId) {
+    return assignedUserId === getClientAccountIdString(user._id);
+  }
+
+  const userClientAccountId = getClientAccountIdString(user.clientAccountId)
+    || getClientAccountIdString(await resolveUserPrimaryClientAccount(user));
+  const numberClientAccountId = getClientAccountIdString(numberRecord.clientAccountId);
+
+  return Boolean(userClientAccountId && numberClientAccountId && userClientAccountId === numberClientAccountId);
+};
+
+const extractVoiceIdentity = (body = {}) => {
+  const explicitIdentity = String(body.userId || body.UserId || body.identity || body.Identity || '').trim();
+  if (explicitIdentity) return explicitIdentity;
+
+  const fromIdentity = String(body.From || body.from || '').trim();
+  if (fromIdentity.toLowerCase().startsWith('client:')) {
+    return fromIdentity.slice('client:'.length).trim();
+  }
+
+  return '';
+};
+
+const resolveRequestedCallerId = async (rawCallerId, context = {}) => {
   const selectedCallerId = String(rawCallerId || '').trim();
   const defaultCallerId = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
 
@@ -158,8 +218,27 @@ const resolveRequestedCallerId = async (rawCallerId) => {
     return defaultCallerId;
   }
 
+  const clientNumbers = await ClientPhoneNumber.find({
+    status: 'active',
+    'capabilities.voice': true,
+    phoneNumber: { $type: 'string', $ne: '' },
+  }).select('phoneNumber capabilities status clientAccountId assignedUserId');
+
+  const selectedClientNumber = clientNumbers.find((numberRecord) => (
+    isClientVoiceCapableNumber(numberRecord)
+    && doPhoneNumbersMatch(numberRecord.phoneNumber, selectedCallerId)
+  ));
+
+  if (selectedClientNumber?.phoneNumber) {
+    const outboundUser = await findOutboundCallerUser(context.voiceIdentity);
+    const allowed = await canUserUseClientCallerId(outboundUser, selectedClientNumber);
+    return allowed ? selectedClientNumber.phoneNumber : defaultCallerId;
+  }
+
   const availableNumbers = await PortingNumber.find({
     phoneNumber: { $type: 'string', $ne: '' },
+    archivedAt: null,
+    $or: [{ clientAccountId: null }, { clientAccountId: { $exists: false } }],
   }).select('phoneNumber capabilities');
 
   const matchedNumber = availableNumbers.find((numberRecord) => (
@@ -169,23 +248,6 @@ const resolveRequestedCallerId = async (rawCallerId) => {
 
   if (matchedNumber?.phoneNumber) {
     return matchedNumber.phoneNumber;
-  }
-
-  // Stage 2 caller ID foundation: allow active client-owned voice numbers
-  // selected by the portal UI, without enforcing tenant caller ID scoping yet.
-  const clientNumbers = await ClientPhoneNumber.find({
-    status: 'active',
-    'capabilities.voice': true,
-    phoneNumber: { $type: 'string', $ne: '' },
-  }).select('phoneNumber capabilities status');
-
-  const matchedClientNumber = clientNumbers.find((numberRecord) => (
-    isClientVoiceCapableNumber(numberRecord)
-    && doPhoneNumbersMatch(numberRecord.phoneNumber, selectedCallerId)
-  ));
-
-  if (matchedClientNumber?.phoneNumber) {
-    return matchedClientNumber.phoneNumber;
   }
 
   return defaultCallerId;
@@ -1020,7 +1082,7 @@ exports.getAvailableCallerIds = async (req, res) => {
     const clientAccountId = req.accountContext?.primaryClientAccountId
       || req.accountContext?.selectedClientAccountId
       || null;
-    const clientOptions = await getClientCallerIdOptions(clientAccountId);
+    const clientOptions = await getClientCallerIdOptions(clientAccountId, req.user);
     const globalOptions = await getGlobalCallerIdOptions();
     const options = clientOptions.length > 0 ? clientOptions : globalOptions;
 
@@ -1040,7 +1102,9 @@ exports.getAvailableCallerIds = async (req, res) => {
 exports.handleOutboundCall = async (req, res) => {
   try {
     const { To, callerId: rawCallerId, CallerId: legacyCallerId } = req.body;
-    const callerId = await resolveRequestedCallerId(rawCallerId || legacyCallerId);
+    const callerId = await resolveRequestedCallerId(rawCallerId || legacyCallerId, {
+      voiceIdentity: extractVoiceIdentity(req.body),
+    });
     const recordingStatusCallback = buildAbsoluteCallbackUrl('/api/calls/recording-status');
     const statusCallback = buildAbsoluteCallbackUrl('/api/calls/call-status');
 
