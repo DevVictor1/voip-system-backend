@@ -2,8 +2,11 @@ const Message = require('../models/Message');
 const Contact = require('../models/Contact');
 const User = require('../models/User');
 const TextingGroup = require('../models/TextingGroup');
+const ClientPhoneNumber = require('../models/ClientPhoneNumber');
 const twilio = require('twilio');
 const { parsePhoneNumberFromString } = require('libphonenumber-js');
+const { getUserRole, isPlatformAdmin } = require('../utils/accessControl');
+const { getClientAccountIdString, resolveUserPrimaryClientAccount } = require('../utils/clientOwnership');
 const {
   incrementAgentWorkload,
   normalizeAgentId,
@@ -49,6 +52,8 @@ const normalize = (num) => {
   return num.replace(/\D/g, '').slice(-10);
 };
 
+const getSmsUserIdentity = (user) => String(user?.agentId || user?._id || '').trim();
+
 const ensureAbsoluteHttpsUrl = (value) => {
   const trimmed = value?.trim();
   if (!trimmed) return '';
@@ -82,6 +87,16 @@ const findContactByPhone = async (phone) => {
   return Contact.findOne({
     'phones.number': normalized,
   });
+};
+
+const attachClientAccountToContactIfMissing = async (contact, clientAccountId) => {
+  const resolvedClientAccountId = getClientAccountIdString(clientAccountId);
+  if (!contact?._id || !resolvedClientAccountId || contact.clientAccountId) {
+    return contact;
+  }
+
+  contact.clientAccountId = resolvedClientAccountId;
+  return contact.save();
 };
 
 const normalizeAssignedNumber = (value) => normalize(value || '');
@@ -130,8 +145,160 @@ const findTextingGroupByAssignedNumber = async (phoneNumber) => {
   return activeGroups.find((group) => doPhoneNumbersMatch(group.assignedNumber, phoneNumber)) || null;
 };
 
+const findClientNumberByPhone = async (phoneNumber) => {
+  const normalizedPhone = normalizeAssignedNumber(phoneNumber);
+  if (!normalizedPhone) return null;
+
+  const activeNumbers = await ClientPhoneNumber.find({
+    status: 'active',
+    archivedAt: null,
+    phoneNumber: { $type: 'string', $ne: '' },
+  }).select('phoneNumber clientAccountId assignedUserId capabilities status archivedAt');
+
+  return activeNumbers.find((numberRecord) => doPhoneNumbersMatch(numberRecord.phoneNumber, phoneNumber)) || null;
+};
+
+const getUserClientAccountId = async (req) => {
+  const contextClientId = getClientAccountIdString(req.accountContext?.selectedClientAccountId)
+    || getClientAccountIdString(req.accountContext?.primaryClientAccountId);
+  if (contextClientId) return contextClientId;
+
+  return getClientAccountIdString(await resolveUserPrimaryClientAccount(req.user));
+};
+
+const isLegacyGlobalSmsUser = async (req) => {
+  if (isPlatformAdmin(req.user)) return true;
+
+  const role = getUserRole(req.user);
+  if (role !== 'agent') return false;
+
+  const clientAccountId = await getUserClientAccountId(req);
+  return !clientAccountId;
+};
+
+const isSmsCapabilityAllowed = (numberRecord, requiresMms = false) => {
+  if (!numberRecord || String(numberRecord.status || '').toLowerCase() !== 'active') return false;
+  if (requiresMms) return Boolean(numberRecord.capabilities?.mms);
+  return Boolean(numberRecord.capabilities?.sms);
+};
+
+const canUseClientSmsNumber = async (req, numberRecord, requiresMms = false) => {
+  if (!isSmsCapabilityAllowed(numberRecord, requiresMms)) return false;
+  if (isPlatformAdmin(req.user)) return true;
+
+  const userClientAccountId = await getUserClientAccountId(req);
+  const numberClientAccountId = getClientAccountIdString(numberRecord.clientAccountId);
+  if (userClientAccountId && numberClientAccountId && userClientAccountId === numberClientAccountId) {
+    return true;
+  }
+
+  const assignedUserId = getClientAccountIdString(numberRecord.assignedUserId);
+  return Boolean(assignedUserId && assignedUserId === getClientAccountIdString(req.user?._id));
+};
+
+const listAllowedClientSmsNumbers = async (req, requiresMms = false) => {
+  const clientAccountId = await getUserClientAccountId(req);
+  if (!clientAccountId && !isPlatformAdmin(req.user)) return [];
+
+  const query = {
+    status: 'active',
+    archivedAt: null,
+    phoneNumber: { $type: 'string', $ne: '' },
+    ...(requiresMms ? { 'capabilities.mms': true } : { 'capabilities.sms': true }),
+    ...(isPlatformAdmin(req.user) || !clientAccountId ? {} : { clientAccountId }),
+  };
+
+  const numbers = await ClientPhoneNumber.find(query)
+    .select('phoneNumber clientAccountId assignedUserId capabilities status archivedAt')
+    .sort({ updatedAt: -1, createdAt: -1 });
+
+  const allowed = [];
+  for (const numberRecord of numbers) {
+    if (await canUseClientSmsNumber(req, numberRecord, requiresMms)) {
+      allowed.push(numberRecord);
+    }
+  }
+
+  return allowed;
+};
+
+const resolveOutboundSmsSender = async ({ req, requestedFrom = '', textingGroup = null, requiresMms = false }) => {
+  const defaultNumber = String(process.env.TWILIO_PHONE_NUMBER || '').trim();
+  const requestedNumber = String(requestedFrom || '').trim();
+  const groupNumber = String(textingGroup?.assignedNumber || '').trim();
+
+  if (groupNumber) {
+    const clientNumber = await findClientNumberByPhone(groupNumber);
+    if (clientNumber) {
+      const allowed = await canUseClientSmsNumber(req, clientNumber, requiresMms);
+      if (!allowed) {
+        return { error: requiresMms ? 'MMS is not enabled for this texting group number' : 'SMS is not enabled for this texting group number' };
+      }
+
+      return {
+        phoneNumber: clientNumber.phoneNumber,
+        clientAccountId: clientNumber.clientAccountId,
+        source: 'texting_group_client_number',
+      };
+    }
+
+    if (textingGroup.clientAccountId && !(await isLegacyGlobalSmsUser(req))) {
+      return { error: 'Texting group number is not available for SMS/MMS sending' };
+    }
+
+    if (groupNumber) {
+      return {
+        phoneNumber: groupNumber,
+        clientAccountId: textingGroup.clientAccountId || null,
+        source: 'texting_group_legacy_number',
+      };
+    }
+  }
+
+  if (requestedNumber) {
+    const clientNumber = await findClientNumberByPhone(requestedNumber);
+    if (!clientNumber) {
+      return { error: 'Selected sender number is not available' };
+    }
+
+    const allowed = await canUseClientSmsNumber(req, clientNumber, requiresMms);
+    if (!allowed) {
+      return { error: 'Selected sender number is not allowed for this user' };
+    }
+
+    return {
+      phoneNumber: clientNumber.phoneNumber,
+      clientAccountId: clientNumber.clientAccountId,
+      source: 'client_number',
+    };
+  }
+
+  const allowedClientNumbers = await listAllowedClientSmsNumbers(req, requiresMms);
+  if (allowedClientNumbers.length > 0) {
+    return {
+      phoneNumber: allowedClientNumbers[0].phoneNumber,
+      clientAccountId: allowedClientNumbers[0].clientAccountId,
+      source: 'client_number_default',
+    };
+  }
+
+  if (defaultNumber && await isLegacyGlobalSmsUser(req)) {
+    return {
+      phoneNumber: defaultNumber,
+      clientAccountId: null,
+      source: 'legacy_default',
+    };
+  }
+
+  return {
+    error: requiresMms
+      ? 'No authorized MMS sender number is available'
+      : 'No authorized SMS sender number is available',
+  };
+};
+
 const getTextingGroupAccessQuery = (userId, role) => {
-  if (role === 'admin') {
+  if (role === 'admin' || role === 'platform_admin') {
     return { isActive: true };
   }
 
@@ -186,7 +353,7 @@ const getTextingGroupContactPayload = (contact, group) => {
   return contact.save();
 };
 
-const findOrCreateContactByPhone = async (phone) => {
+const findOrCreateContactByPhone = async (phone, clientAccountId = null) => {
   const normalized = normalize(phone);
 
   if (!normalized) {
@@ -195,10 +362,11 @@ const findOrCreateContactByPhone = async (phone) => {
 
   const existingContact = await findContactByPhone(normalized);
   if (existingContact) {
-    return existingContact;
+    return attachClientAccountToContactIfMissing(existingContact, clientAccountId);
   }
 
   const createdContact = await Contact.create({
+    clientAccountId: getClientAccountIdString(clientAccountId) || null,
     firstName: '',
     lastName: '',
     phones: [
@@ -348,7 +516,9 @@ exports.receiveSMS = async (req, res) => {
 
     console.log('Incoming SMS:', From, Body);
 
-    let contact = await findOrCreateContactByPhone(From);
+    const inboundClientNumber = await findClientNumberByPhone(To);
+    const inboundClientAccountId = inboundClientNumber?.clientAccountId || null;
+    let contact = await findOrCreateContactByPhone(From, inboundClientAccountId);
     const textingGroup = await resolveTextingGroup({
       contact,
       assignedNumber: To,
@@ -367,6 +537,7 @@ exports.receiveSMS = async (req, res) => {
     }
 
     const message = await Message.create({
+      clientAccountId: inboundClientAccountId || textingGroup?.clientAccountId || null,
       from: normalize(From),
       to: normalize(To),
       fromFull: From,
@@ -397,7 +568,10 @@ exports.receiveSMS = async (req, res) => {
 
 exports.sendSMS = async (req, res) => {
   try {
-    const { to, body, message, mediaUrl, textingGroupId, userId, senderName, role } = req.body;
+    const { to, body, message, mediaUrl, textingGroupId } = req.body;
+    const authenticatedUserId = getSmsUserIdentity(req.user);
+    const authenticatedSenderName = req.user?.name || req.user?.email || authenticatedUserId;
+    const authenticatedRole = getUserRole(req.user);
     const text = body || message;
 
     if (!to || (!text && !mediaUrl)) {
@@ -407,19 +581,23 @@ exports.sendSMS = async (req, res) => {
     const normalizedTo = normalize(to);
     const formattedTo = formatToE164(to);
     const requestContext = textingGroupId ? 'texting-group' : 'direct';
+    const mediaList = mediaUrl
+      ? (Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl])
+      : undefined;
+    const requiresMms = Array.isArray(mediaList) && mediaList.length > 0;
 
     logSmsSendDebug('request-received', {
       context: requestContext,
       originalTo: to,
       normalizedTo,
       formattedTo,
-      originalFrom: process.env.TWILIO_PHONE_NUMBER || '',
+      originalFrom: req.body?.from || req.body?.fromNumber || req.body?.senderNumber || '',
       textingGroupId: textingGroupId || null,
       hasTextingGroupContext: Boolean(textingGroupId),
-      senderName: senderName || null,
-      userId: userId || null,
-      role: role || null,
-      hasMedia: Boolean(mediaUrl),
+      senderName: authenticatedSenderName || null,
+      userId: authenticatedUserId || null,
+      role: authenticatedRole || null,
+      hasMedia: requiresMms,
       bodyLength: String(text || '').length,
       bodyPreview: String(text || '').slice(0, 80),
     });
@@ -442,8 +620,8 @@ exports.sendSMS = async (req, res) => {
       return res.status(404).json({ error: 'Texting group not found' });
     }
 
-    if (textingGroup && userId) {
-      const canUseGroup = textingGroup.members.includes(String(userId)) || req.body?.role === 'admin';
+    if (textingGroup) {
+      const canUseGroup = textingGroup.members.includes(String(authenticatedUserId)) || isPlatformAdmin(req.user);
       if (!canUseGroup) {
         return res.status(403).json({ error: 'You are not a member of this texting group' });
       }
@@ -451,13 +629,20 @@ exports.sendSMS = async (req, res) => {
 
     console.log('Sending SMS to:', formattedTo);
 
-    const mediaList = mediaUrl
-      ? (Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl])
-      : undefined;
+    const senderResolution = await resolveOutboundSmsSender({
+      req,
+      requestedFrom: req.body?.from || req.body?.fromNumber || req.body?.senderNumber,
+      textingGroup,
+      requiresMms,
+    });
+
+    if (senderResolution.error) {
+      return res.status(403).json({ error: senderResolution.error });
+    }
 
     const payload = {
       body: text,
-      from: textingGroup?.assignedNumber || process.env.TWILIO_PHONE_NUMBER,
+      from: senderResolution.phoneNumber,
       to: formattedTo,
       mediaUrl: mediaList,
     };
@@ -468,6 +653,7 @@ exports.sendSMS = async (req, res) => {
       normalizedTo,
       formattedTo,
       from: payload.from,
+      fromSource: senderResolution.source,
       textingGroupId: textingGroup?.slug || null,
       textingGroupName: textingGroup?.name || null,
       mediaCount: mediaList?.length || 0,
@@ -492,16 +678,17 @@ exports.sendSMS = async (req, res) => {
       errorMessage: twilioRes.errorMessage || null,
     });
 
-    const contact = await findOrCreateContactByPhone(normalizedTo);
+    const contact = await findOrCreateContactByPhone(normalizedTo, senderResolution.clientAccountId);
     if (contact && textingGroup) {
       await getTextingGroupContactPayload(contact, textingGroup);
     }
 
     const saved = await Message.create({
+      clientAccountId: senderResolution.clientAccountId || textingGroup?.clientAccountId || null,
       sid: twilioRes.sid,
-      from: normalize(textingGroup?.assignedNumber || process.env.TWILIO_PHONE_NUMBER),
+      from: normalize(senderResolution.phoneNumber),
       to: normalizedTo,
-      fromFull: textingGroup?.assignedNumber || process.env.TWILIO_PHONE_NUMBER,
+      fromFull: senderResolution.phoneNumber,
       toFull: to,
       body: text,
       media: mediaList || [],
@@ -510,12 +697,12 @@ exports.sendSMS = async (req, res) => {
       conversationId: normalizedTo,
       textingGroupId: textingGroup?.slug || null,
       textingGroupName: textingGroup?.name || null,
-      senderId: userId || null,
-      senderName: senderName || null,
+      senderId: authenticatedUserId || null,
+      senderName: authenticatedSenderName || null,
       source: 'sms',
       status: twilioRes.status || 'queued',
       read: true,
-      readBy: userId ? [String(userId)] : [],
+      readBy: authenticatedUserId ? [String(authenticatedUserId)] : [],
     });
 
     if (global.io) {
@@ -578,8 +765,7 @@ exports.getConversations = async (req, res) => {
     const conversations = {};
 
     for (const msg of messages) {
-      const isOutgoing = msg.from === normalize(process.env.TWILIO_PHONE_NUMBER);
-      const phone = isOutgoing ? msg.to : msg.from;
+      const phone = getCounterpartPhoneForMessage(msg);
       const key = normalize(msg.conversationId || phone);
 
         if (!conversations[key]) {
@@ -616,8 +802,8 @@ exports.getConversations = async (req, res) => {
 
 exports.getTextingGroups = async (req, res) => {
   try {
-    const userId = String(req.query?.userId || '').trim();
-    const role = String(req.query?.role || '').trim().toLowerCase();
+    const userId = getSmsUserIdentity(req.user);
+    const role = getUserRole(req.user);
 
     if (!userId) {
       return res.status(400).json({ error: 'Missing userId' });
@@ -665,8 +851,8 @@ exports.getTextingGroups = async (req, res) => {
 
 exports.getTextingGroupConversations = async (req, res) => {
   try {
-    const userId = String(req.query?.userId || '').trim();
-    const role = String(req.query?.role || '').trim().toLowerCase();
+    const userId = getSmsUserIdentity(req.user);
+    const role = getUserRole(req.user);
     const groupId = String(req.params?.groupId || '').trim().toLowerCase();
 
     if (!userId || !groupId) {
@@ -734,8 +920,8 @@ exports.getTextingGroupConversations = async (req, res) => {
 
 exports.getTextingGroupMessages = async (req, res) => {
   try {
-    const userId = String(req.query?.userId || '').trim();
-    const role = String(req.query?.role || '').trim().toLowerCase();
+    const userId = getSmsUserIdentity(req.user);
+    const role = getUserRole(req.user);
     const groupId = String(req.params?.groupId || '').trim().toLowerCase();
     const phone = String(req.params?.phone || '').trim();
 
@@ -765,7 +951,7 @@ exports.getTextingGroupMessages = async (req, res) => {
 
 exports.markTextingGroupRead = async (req, res) => {
   try {
-    const userId = String(req.body?.userId || req.query?.userId || '').trim();
+    const userId = getSmsUserIdentity(req.user);
     const groupId = String(req.params?.groupId || '').trim().toLowerCase();
     const phone = String(req.params?.phone || '').trim();
 
@@ -833,6 +1019,10 @@ exports.markAsRead = async (req, res) => {
 
 exports.clearMessages = async (req, res) => {
   try {
+    if (!isPlatformAdmin(req.user)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
     await Message.deleteMany({});
     res.json({ success: true });
   } catch (error) {

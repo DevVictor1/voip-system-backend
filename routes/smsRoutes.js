@@ -1,7 +1,9 @@
 const express = require('express');
-const router = express.Router();
 const multer = require('multer');
+const { authenticate } = require('../middleware/authMiddleware');
+const { resolveAccountContext } = require('../middleware/accountContextMiddleware');
 
+const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
 
 const {
@@ -16,36 +18,30 @@ const {
   markTextingGroupRead,
   clearMessages,
   smsStatusCallback,
-  uploadMedia
+  uploadMedia,
 } = require('../controllers/smsController');
 
-// 📩 Incoming
+// Twilio calls these directly, so they must remain public.
 router.post('/webhook', receiveSMS);
 router.post('/incoming-sms', receiveSMS);
-
-// 📤 Send
-router.post('/send', sendSMS);
-
-// 📎 Upload media
-router.post('/upload', upload.single('file'), uploadMedia);
-
-// 📊 STATUS CALLBACK (NEW 🔥)
 router.post('/status', smsStatusCallback);
 
-// 📚 Conversations
+// App-facing SMS/MMS routes require authenticated server-side identity.
+router.use(authenticate, resolveAccountContext);
+
+router.post('/send', sendSMS);
+router.post('/upload', upload.single('file'), uploadMedia);
+
 router.get('/conversations', getConversations);
 router.get('/texting-groups', getTextingGroups);
 router.get('/texting-groups/:groupId/conversations', getTextingGroupConversations);
 
-// 💬 Messages
 router.get('/messages/:phone', getMessages);
 router.get('/texting-groups/:groupId/messages/:phone', getTextingGroupMessages);
 
-// ✅ Read
 router.put('/read/:phone', markAsRead);
 router.put('/texting-groups/:groupId/read/:phone', markTextingGroupRead);
 
-// 🧹 Clear
 router.delete('/clear', clearMessages);
 
 module.exports = router;
