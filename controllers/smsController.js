@@ -81,11 +81,31 @@ const DIRECT_CUSTOMER_MESSAGE_QUERY = {
   ],
 };
 
-const findContactByPhone = async (phone) => {
+const findContactByPhone = async (phone, clientAccountId = null) => {
   const normalized = normalize(phone);
+  const scopedClientAccountId = getClientAccountIdString(clientAccountId);
+
+  if (scopedClientAccountId) {
+    const contacts = await Contact.find({
+      'phones.number': normalized,
+      $or: [
+        { clientAccountId: scopedClientAccountId },
+        { clientAccountId: null },
+        { clientAccountId: { $exists: false } },
+      ],
+    }).sort({ updatedAt: -1, createdAt: -1 });
+
+    return contacts.find((contact) => getClientAccountIdString(contact.clientAccountId) === scopedClientAccountId)
+      || contacts[0]
+      || null;
+  }
 
   return Contact.findOne({
     'phones.number': normalized,
+    $or: [
+      { clientAccountId: null },
+      { clientAccountId: { $exists: false } },
+    ],
   });
 };
 
@@ -124,22 +144,24 @@ const doPhoneNumbersMatch = (left, right) => {
   return Boolean(leftStripped && rightStripped && leftStripped === rightStripped);
 };
 
-const findTextingGroupBySlug = async (groupId) => {
+const findTextingGroupBySlug = async (groupId, clientAccountId = null) => {
   if (!groupId) return null;
 
   return TextingGroup.findOne({
     slug: String(groupId).trim().toLowerCase(),
     isActive: true,
+    ...(clientAccountId ? { clientAccountId } : {}),
   });
 };
 
-const findTextingGroupByAssignedNumber = async (phoneNumber) => {
+const findTextingGroupByAssignedNumber = async (phoneNumber, clientAccountId = null) => {
   const normalized = normalizeAssignedNumber(phoneNumber);
   if (!normalized) return null;
 
   const activeGroups = await TextingGroup.find({
     isActive: true,
     assignedNumber: { $type: 'string', $ne: '' },
+    ...(clientAccountId ? { clientAccountId } : {}),
   });
 
   return activeGroups.find((group) => doPhoneNumbersMatch(group.assignedNumber, phoneNumber)) || null;
@@ -174,6 +196,24 @@ const isLegacyGlobalSmsUser = async (req) => {
 
   const clientAccountId = await getUserClientAccountId(req);
   return !clientAccountId;
+};
+
+const buildSmsClientScopeQuery = async (req) => {
+  if (isPlatformAdmin(req.user)) {
+    return {};
+  }
+
+  const clientAccountId = await getUserClientAccountId(req);
+  if (clientAccountId) {
+    return { clientAccountId };
+  }
+
+  return {
+    $or: [
+      { clientAccountId: null },
+      { clientAccountId: { $exists: false } },
+    ],
+  };
 };
 
 const isSmsCapabilityAllowed = (numberRecord, requiresMms = false) => {
@@ -297,28 +337,32 @@ const resolveOutboundSmsSender = async ({ req, requestedFrom = '', textingGroup 
   };
 };
 
-const getTextingGroupAccessQuery = (userId, role) => {
+const getTextingGroupAccessQuery = (userId, role, clientAccountId = null) => {
   if (role === 'admin' || role === 'platform_admin') {
-    return { isActive: true };
+    return {
+      isActive: true,
+      ...(clientAccountId ? { clientAccountId } : {}),
+    };
   }
 
   return {
     isActive: true,
     members: userId,
+    ...(clientAccountId ? { clientAccountId } : {}),
   };
 };
 
-const resolveTextingGroup = async ({ contact, assignedNumber }) => {
+const resolveTextingGroup = async ({ contact, assignedNumber, clientAccountId = null }) => {
   const contactGroupId = String(contact?.textingGroupId || '').trim().toLowerCase();
 
   if (contactGroupId) {
-    const matchedGroup = await findTextingGroupBySlug(contactGroupId);
+    const matchedGroup = await findTextingGroupBySlug(contactGroupId, clientAccountId);
     if (matchedGroup) {
       return matchedGroup;
     }
   }
 
-  return findTextingGroupByAssignedNumber(assignedNumber);
+  return findTextingGroupByAssignedNumber(assignedNumber, clientAccountId);
 };
 
 const getCounterpartPhoneForMessage = (message) => {
@@ -327,12 +371,13 @@ const getCounterpartPhoneForMessage = (message) => {
   return normalize(isOutgoing ? message.to : message.from);
 };
 
-const getTextingGroupThreadQuery = (groupId, phone) => {
+const getTextingGroupThreadQuery = (groupId, phone, clientScopeQuery = {}) => {
   const normalizedPhone = normalize(phone);
 
   return {
     $and: [
       BASE_CUSTOMER_MESSAGE_QUERY,
+      clientScopeQuery,
       { textingGroupId: String(groupId || '').trim().toLowerCase() },
       {
         $or: [
@@ -360,7 +405,7 @@ const findOrCreateContactByPhone = async (phone, clientAccountId = null) => {
     return null;
   }
 
-  const existingContact = await findContactByPhone(normalized);
+  const existingContact = await findContactByPhone(normalized, clientAccountId);
   if (existingContact) {
     return attachClientAccountToContactIfMissing(existingContact, clientAccountId);
   }
@@ -522,6 +567,7 @@ exports.receiveSMS = async (req, res) => {
     const textingGroup = await resolveTextingGroup({
       contact,
       assignedNumber: To,
+      clientAccountId: inboundClientAccountId,
     });
 
     if (contact) {
@@ -761,7 +807,13 @@ exports.smsStatusCallback = async (req, res) => {
 
 exports.getConversations = async (req, res) => {
   try {
-    const messages = await Message.find(DIRECT_CUSTOMER_MESSAGE_QUERY).sort({ createdAt: -1 });
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
+    const messages = await Message.find({
+      $and: [
+        DIRECT_CUSTOMER_MESSAGE_QUERY,
+        clientScopeQuery,
+      ],
+    }).sort({ createdAt: -1 });
     const conversations = {};
 
     for (const msg of messages) {
@@ -769,7 +821,7 @@ exports.getConversations = async (req, res) => {
       const key = normalize(msg.conversationId || phone);
 
         if (!conversations[key]) {
-          const contact = await findContactByPhone(key);
+          const contact = await findContactByPhone(key, msg.clientAccountId);
 
           conversations[key] = {
             _id: contact?._id || null,
@@ -804,19 +856,24 @@ exports.getTextingGroups = async (req, res) => {
   try {
     const userId = getSmsUserIdentity(req.user);
     const role = getUserRole(req.user);
+    const clientAccountId = await getUserClientAccountId(req);
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
 
     if (!userId) {
       return res.status(400).json({ error: 'Missing userId' });
     }
 
-    const groups = await TextingGroup.find(getTextingGroupAccessQuery(userId, role))
+    const groups = await TextingGroup.find(getTextingGroupAccessQuery(userId, role, clientAccountId))
       .sort({ updatedAt: -1, name: 1 });
 
     const groupIds = groups.map((group) => group.slug);
     const messages = groupIds.length > 0
       ? await Message.find({
-          ...BASE_CUSTOMER_MESSAGE_QUERY,
-          textingGroupId: { $in: groupIds },
+          $and: [
+            BASE_CUSTOMER_MESSAGE_QUERY,
+            clientScopeQuery,
+            { textingGroupId: { $in: groupIds } },
+          ],
         }).sort({ createdAt: -1 })
       : [];
 
@@ -853,6 +910,8 @@ exports.getTextingGroupConversations = async (req, res) => {
   try {
     const userId = getSmsUserIdentity(req.user);
     const role = getUserRole(req.user);
+    const clientAccountId = await getUserClientAccountId(req);
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
     const groupId = String(req.params?.groupId || '').trim().toLowerCase();
 
     if (!userId || !groupId) {
@@ -861,7 +920,7 @@ exports.getTextingGroupConversations = async (req, res) => {
 
     const group = await TextingGroup.findOne({
       slug: groupId,
-      ...getTextingGroupAccessQuery(userId, role),
+      ...getTextingGroupAccessQuery(userId, role, clientAccountId),
     });
 
     if (!group) {
@@ -869,8 +928,11 @@ exports.getTextingGroupConversations = async (req, res) => {
     }
 
     const messages = await Message.find({
-      ...BASE_CUSTOMER_MESSAGE_QUERY,
-      textingGroupId: group.slug,
+      $and: [
+        BASE_CUSTOMER_MESSAGE_QUERY,
+        clientScopeQuery,
+        { textingGroupId: group.slug },
+      ],
     }).sort({ createdAt: -1 });
 
     const conversations = {};
@@ -880,7 +942,7 @@ exports.getTextingGroupConversations = async (req, res) => {
       if (!phone) continue;
 
       if (!conversations[phone]) {
-        const contact = await findContactByPhone(phone);
+        const contact = await findContactByPhone(phone, msg.clientAccountId);
         const fullName = contact
           ? `${contact.firstName || ''} ${contact.lastName || ''}`.trim()
           : '';
@@ -922,6 +984,8 @@ exports.getTextingGroupMessages = async (req, res) => {
   try {
     const userId = getSmsUserIdentity(req.user);
     const role = getUserRole(req.user);
+    const clientAccountId = await getUserClientAccountId(req);
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
     const groupId = String(req.params?.groupId || '').trim().toLowerCase();
     const phone = String(req.params?.phone || '').trim();
 
@@ -931,7 +995,7 @@ exports.getTextingGroupMessages = async (req, res) => {
 
     const group = await TextingGroup.findOne({
       slug: groupId,
-      ...getTextingGroupAccessQuery(userId, role),
+      ...getTextingGroupAccessQuery(userId, role, clientAccountId),
     });
 
     if (!group) {
@@ -939,7 +1003,7 @@ exports.getTextingGroupMessages = async (req, res) => {
     }
 
     const messages = await Message.find(
-      getTextingGroupThreadQuery(group.slug, phone)
+      getTextingGroupThreadQuery(group.slug, phone, clientScopeQuery)
     ).sort({ createdAt: 1 });
 
     res.json(messages);
@@ -952,6 +1016,7 @@ exports.getTextingGroupMessages = async (req, res) => {
 exports.markTextingGroupRead = async (req, res) => {
   try {
     const userId = getSmsUserIdentity(req.user);
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
     const groupId = String(req.params?.groupId || '').trim().toLowerCase();
     const phone = String(req.params?.phone || '').trim();
 
@@ -961,7 +1026,7 @@ exports.markTextingGroupRead = async (req, res) => {
 
     await Message.updateMany(
       {
-        ...getTextingGroupThreadQuery(groupId, phone),
+        ...getTextingGroupThreadQuery(groupId, phone, clientScopeQuery),
         direction: 'inbound',
         readBy: { $ne: userId },
       },
@@ -980,13 +1045,19 @@ exports.markTextingGroupRead = async (req, res) => {
 exports.getMessages = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
 
     const messages = await Message.find({
-      ...DIRECT_CUSTOMER_MESSAGE_QUERY,
-      $or: [
-        { from: normalized },
-        { to: normalized },
-        { conversationId: normalized },
+      $and: [
+        DIRECT_CUSTOMER_MESSAGE_QUERY,
+        clientScopeQuery,
+        {
+          $or: [
+            { from: normalized },
+            { to: normalized },
+            { conversationId: normalized },
+          ],
+        },
       ],
     }).sort({ createdAt: 1 });
 
@@ -1000,12 +1071,18 @@ exports.getMessages = async (req, res) => {
 exports.markAsRead = async (req, res) => {
   try {
     const normalized = normalize(req.params.phone);
+    const clientScopeQuery = await buildSmsClientScopeQuery(req);
 
     await Message.updateMany(
       {
-        ...DIRECT_CUSTOMER_MESSAGE_QUERY,
-        from: normalized,
-        read: false,
+        $and: [
+          DIRECT_CUSTOMER_MESSAGE_QUERY,
+          clientScopeQuery,
+          {
+            from: normalized,
+            read: false,
+          },
+        ],
       },
       { read: true }
     );
