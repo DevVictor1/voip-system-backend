@@ -61,6 +61,16 @@ const normalizeDate = (value) => {
 
 const getActorName = (user) => user?.name || user?.email || 'Admin';
 
+const ACTIVATION_COMPLETED_ERROR = {
+  title: 'Activation Already Completed',
+  message: 'This porting request has already been activated.\nTo change the workflow, first archive or deactivate the activated client phone numbers if appropriate.\nThe request will remain in Completed status.',
+};
+
+const sendActivationCompletedError = (res) => res.status(409).json({
+  error: ACTIVATION_COMPLETED_ERROR.title,
+  ...ACTIVATION_COMPLETED_ERROR,
+});
+
 const buildStatusEntry = (status, description, user) => ({
   status,
   description: normalizeTrimmedText(description),
@@ -319,6 +329,10 @@ exports.updatePortingRequest = async (req, res) => {
     }
 
     const previousStatus = request.status;
+    if (request.activatedAt && previousStatus === 'completed' && payloadResult.payload.status !== 'completed') {
+      return sendActivationCompletedError(res);
+    }
+
     Object.assign(request, payloadResult.payload);
     if (previousStatus !== request.status) {
       request.statusHistory.push(buildStatusEntry(request.status, 'Porting request status updated', req.user));
@@ -343,6 +357,10 @@ exports.updatePortingRequestStatus = async (req, res) => {
     const nextStatus = normalizeStatus(req.body?.status, request.status);
     if (!PORTING_STATUSES.has(nextStatus)) {
       return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    if (request.activatedAt && request.status === 'completed' && nextStatus !== 'completed') {
+      return sendActivationCompletedError(res);
     }
 
     request.status = nextStatus;
