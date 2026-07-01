@@ -57,15 +57,17 @@ const validateAssignedUser = async ({ assignedUserId, clientAccountId, allowDiff
 };
 
 const ensurePhoneNumberAvailable = async ({ phoneNumber, clientAccountId, excludeNumberId = null }) => {
-  const existing = await ClientPhoneNumber.findOne({
-    phoneNumber,
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+  const candidates = await ClientPhoneNumber.find({
+    phoneNumber: { $type: 'string', $ne: '' },
     ...(excludeNumberId ? { _id: { $ne: excludeNumberId } } : {}),
-  }).select('_id clientAccountId');
+  }).select('_id clientAccountId phoneNumber');
 
+  const existing = candidates.find((candidate) => normalizePhoneNumber(candidate.phoneNumber) === normalizedPhoneNumber);
   if (!existing) return null;
 
   if (getClientAccountIdString(existing.clientAccountId) === getClientAccountIdString(clientAccountId)) {
-    return null;
+    return 'This phone number is already assigned to this client organization';
   }
 
   return 'This phone number is already assigned to another client organization';

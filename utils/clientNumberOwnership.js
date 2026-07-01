@@ -5,7 +5,20 @@ const CLIENT_PHONE_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'i
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
-const normalizePhoneNumber = (value) => normalizeTrimmedText(value);
+const normalizePhoneNumber = (value) => {
+  const raw = normalizeTrimmedText(value);
+  if (!raw) return '';
+
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (raw.startsWith('+')) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (digits.length >= 8 && digits.length <= 15) return `+${digits}`;
+
+  return raw;
+};
 
 const normalizeStatus = (value, fallback = 'pending') => {
   const normalized = normalizeTrimmedText(value).toLowerCase();
