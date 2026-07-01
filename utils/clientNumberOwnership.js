@@ -1,7 +1,7 @@
 const ClientAccount = require('../models/ClientAccount');
 const ClientPhoneNumber = require('../models/ClientPhoneNumber');
 
-const CLIENT_PHONE_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive']);
+const CLIENT_PHONE_NUMBER_STATUSES = new Set(['active', 'pending', 'porting', 'inactive', 'archived']);
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -74,6 +74,8 @@ const sanitizeClientPhoneNumber = (numberRecord) => ({
     mms: Boolean(numberRecord.capabilities?.mms),
   },
   status: numberRecord.status || 'pending',
+  archivedAt: numberRecord.archivedAt || null,
+  isArchived: Boolean(numberRecord.archivedAt || numberRecord.status === 'archived'),
   assignedUserId: numberRecord.assignedUserId?._id
     ? String(numberRecord.assignedUserId._id)
     : (numberRecord.assignedUserId ? String(numberRecord.assignedUserId) : null),
@@ -102,7 +104,11 @@ const syncClientAccountAssignedNumbers = async (clientAccountId) => {
   const clientAccount = await ClientAccount.findById(clientAccountId);
   if (!clientAccount) return null;
 
-  const numberRecords = await ClientPhoneNumber.find({ clientAccountId })
+  const numberRecords = await ClientPhoneNumber.find({
+    clientAccountId,
+    archivedAt: null,
+    status: { $ne: 'archived' },
+  })
     .sort({ createdAt: 1, updatedAt: 1 });
 
   clientAccount.assignedNumbers = numberRecords.map((record) => record.phoneNumber);

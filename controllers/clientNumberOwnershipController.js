@@ -87,7 +87,7 @@ const buildNumberPayload = async ({ req, clientAccount, existingNumber = null })
   const userLookup = await validateAssignedUser({
     assignedUserId: req.body?.assignedUserId ?? existingNumber?.assignedUserId,
     clientAccountId: clientAccount._id,
-    allowDifferentClientAccounts: isPlatformAdmin(req.user),
+    allowDifferentClientAccounts: false,
   });
   if (userLookup.error) return { error: userLookup.error };
 
@@ -104,6 +104,8 @@ const buildNumberPayload = async ({ req, clientAccount, existingNumber = null })
       route: normalizeTrimmedText(req.body?.route ?? existingNumber?.route),
       notes: normalizeTrimmedText(req.body?.notes ?? existingNumber?.notes),
       source: existingNumber?.source || 'portal',
+      archivedAt: existingNumber?.archivedAt || null,
+      archivedBy: existingNumber?.archivedBy || null,
     },
   };
 };
@@ -115,8 +117,12 @@ exports.listClientNumbers = async (req, res) => {
       return res.status(404).json({ error: 'Client organization not found' });
     }
 
+    const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
+    const query = includeArchived
+      ? { clientAccountId: clientAccount._id }
+      : { clientAccountId: clientAccount._id, archivedAt: null, status: { $ne: 'archived' } };
     const numbers = await populateClientPhoneNumberQuery(
-      ClientPhoneNumber.find({ clientAccountId: clientAccount._id }).sort({ createdAt: -1 })
+      ClientPhoneNumber.find(query).sort({ createdAt: -1 })
     );
 
     return res.json({ numbers: numbers.map(sanitizeClientPhoneNumber) });
@@ -170,6 +176,13 @@ exports.updateClientNumber = async (req, res) => {
     }
 
     Object.assign(numberRecord, payloadResult.payload);
+    if (numberRecord.status !== 'archived') {
+      numberRecord.archivedAt = null;
+      numberRecord.archivedBy = null;
+    } else {
+      numberRecord.archivedAt = numberRecord.archivedAt || new Date();
+      numberRecord.archivedBy = numberRecord.archivedBy || req.user?._id || null;
+    }
     await numberRecord.save();
     await syncClientAccountAssignedNumbers(clientAccount._id);
 
@@ -188,32 +201,95 @@ exports.deleteClientNumber = async (req, res) => {
       return res.status(404).json({ error: 'Client organization not found' });
     }
 
-    const deleted = await ClientPhoneNumber.findOneAndDelete({
+    const numberRecord = await ClientPhoneNumber.findOne({
       _id: req.params.numberId,
       clientAccountId: clientAccount._id,
     });
 
-    if (!deleted) {
+    if (!numberRecord) {
       return res.status(404).json({ error: 'Phone number not found' });
     }
 
+    numberRecord.status = 'archived';
+    numberRecord.archivedAt = numberRecord.archivedAt || new Date();
+    numberRecord.archivedBy = numberRecord.archivedBy || req.user?._id || null;
+    await numberRecord.save();
     await syncClientAccountAssignedNumbers(clientAccount._id);
     return res.json({ success: true });
   } catch (error) {
-    console.error('Client number delete error:', error);
-    return res.status(500).json({ error: 'Failed to delete phone number' });
+    console.error('Client number archive error:', error);
+    return res.status(500).json({ error: 'Failed to archive phone number' });
   }
 };
 
-exports.listAllClientNumbers = async (_req, res) => {
+exports.listAllClientNumbers = async (req, res) => {
   try {
+    const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
+    const query = includeArchived ? {} : { archivedAt: null, status: { $ne: 'archived' } };
     const numbers = await populateClientPhoneNumberQuery(
-      ClientPhoneNumber.find({}).sort({ updatedAt: -1, createdAt: -1 })
+      ClientPhoneNumber.find(query).sort({ updatedAt: -1, createdAt: -1 })
     );
 
     return res.json({ numbers: numbers.map(sanitizeClientPhoneNumber) });
   } catch (error) {
     console.error('Admin client number list error:', error);
     return res.status(500).json({ error: 'Failed to load phone numbers' });
+  }
+};
+
+exports.updateClientNumberById = async (req, res) => {
+  try {
+    const numberRecord = await ClientPhoneNumber.findById(req.params.numberId);
+    if (!numberRecord) {
+      return res.status(404).json({ error: 'Phone number not found' });
+    }
+
+    const clientAccount = await ClientAccount.findById(numberRecord.clientAccountId);
+    if (!clientAccount) {
+      return res.status(404).json({ error: 'Client organization not found' });
+    }
+
+    const payloadResult = await buildNumberPayload({ req, clientAccount, existingNumber: numberRecord });
+    if (payloadResult.error) {
+      return res.status(400).json({ error: payloadResult.error });
+    }
+
+    Object.assign(numberRecord, payloadResult.payload);
+    if (numberRecord.status !== 'archived') {
+      numberRecord.archivedAt = null;
+      numberRecord.archivedBy = null;
+    } else {
+      numberRecord.archivedAt = numberRecord.archivedAt || new Date();
+      numberRecord.archivedBy = numberRecord.archivedBy || req.user?._id || null;
+    }
+    await numberRecord.save();
+    await syncClientAccountAssignedNumbers(clientAccount._id);
+
+    const populated = await populateClientPhoneNumberQuery(ClientPhoneNumber.findById(numberRecord._id));
+    return res.json({ number: sanitizeClientPhoneNumber(populated) });
+  } catch (error) {
+    console.error('Admin client number update error:', error);
+    return res.status(500).json({ error: 'Failed to update phone number' });
+  }
+};
+
+exports.archiveClientNumberById = async (req, res) => {
+  try {
+    const numberRecord = await ClientPhoneNumber.findById(req.params.numberId);
+    if (!numberRecord) {
+      return res.status(404).json({ error: 'Phone number not found' });
+    }
+
+    numberRecord.status = 'archived';
+    numberRecord.archivedAt = numberRecord.archivedAt || new Date();
+    numberRecord.archivedBy = numberRecord.archivedBy || req.user?._id || null;
+    await numberRecord.save();
+    await syncClientAccountAssignedNumbers(numberRecord.clientAccountId);
+
+    const populated = await populateClientPhoneNumberQuery(ClientPhoneNumber.findById(numberRecord._id));
+    return res.json({ number: sanitizeClientPhoneNumber(populated) });
+  } catch (error) {
+    console.error('Admin client number archive error:', error);
+    return res.status(500).json({ error: 'Failed to archive phone number' });
   }
 };

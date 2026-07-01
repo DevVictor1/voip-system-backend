@@ -22,11 +22,13 @@ const {
   deleteClientAccountNote,
 } = require('../controllers/adminPortalController');
 const {
+  archiveClientNumberById,
   createClientNumber,
   deleteClientNumber,
   listAllClientNumbers,
   listClientNumbers,
   updateClientNumber,
+  updateClientNumberById,
 } = require('../controllers/clientNumberOwnershipController');
 const {
   assignScopedUser,
@@ -130,6 +132,8 @@ router.get('/client-accounts/:clientAccountId/numbers', listClientNumbers);
 router.post('/client-accounts/:clientAccountId/numbers', createClientNumber);
 router.put('/client-accounts/:clientAccountId/numbers/:numberId', updateClientNumber);
 router.delete('/client-accounts/:clientAccountId/numbers/:numberId', deleteClientNumber);
+router.put('/client-numbers/:numberId', updateClientNumberById);
+router.patch('/client-numbers/:numberId/archive', archiveClientNumberById);
 
 router.get('/porting-requests', listPortingRequests);
 router.post('/porting-requests', createPortingRequest);

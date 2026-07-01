@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const CLIENT_PHONE_NUMBER_STATUSES = ['active', 'pending', 'porting', 'inactive'];
+const CLIENT_PHONE_NUMBER_STATUSES = ['active', 'pending', 'porting', 'inactive', 'archived'];
 
 const clientPhoneNumberSchema = new mongoose.Schema(
   {
@@ -69,6 +69,15 @@ const clientPhoneNumberSchema = new mongoose.Schema(
       enum: ['portal', 'legacy_metadata', 'twilio_future'],
       default: 'portal',
     },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
+    archivedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -79,5 +88,6 @@ clientPhoneNumberSchema.index(
   { resellerId: 1 },
   { partialFilterExpression: { resellerId: { $type: 'objectId' } } }
 );
+clientPhoneNumberSchema.index({ archivedAt: 1 });
 
 module.exports = mongoose.model('ClientPhoneNumber', clientPhoneNumberSchema);

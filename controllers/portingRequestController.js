@@ -467,6 +467,8 @@ exports.activatePortingNumbers = async (req, res) => {
         route: item.assignedDepartment || '',
         notes: item.notes || request.notes || '',
         source: 'portal',
+        archivedAt: null,
+        archivedBy: null,
       };
 
       const numberRecord = await ClientPhoneNumber.findOneAndUpdate(
