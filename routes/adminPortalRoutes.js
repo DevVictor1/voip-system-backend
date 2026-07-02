@@ -47,6 +47,9 @@ const {
   updatePortingRequestStatus,
   uploadPortingDocument,
 } = require('../controllers/portingRequestController');
+const {
+  testTwilioPortingConnectivity,
+} = require('../controllers/twilioPortingDiagnosticsController');
 const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -143,5 +146,6 @@ router.patch('/porting-requests/:id/status', updatePortingRequestStatus);
 router.post('/porting-requests/:id/documents', handlePortingDocumentUpload, uploadPortingDocument);
 router.patch('/porting-requests/:id/archive', archivePortingRequest);
 router.post('/porting-requests/:id/activate', activatePortingNumbers);
+router.get('/diagnostics/twilio-porting', testTwilioPortingConnectivity);
 
 module.exports = router;
