@@ -9,6 +9,7 @@ const {
   TWILIO_SUPPORTED_MIME_TYPES,
   uploadUtilityBillDocument,
 } = require('../services/twilioDocumentService');
+const { buildPortingReadiness } = require('../services/portingReadinessService');
 const { checkPhoneNumberPortability } = require('../services/twilioPortingService');
 const { syncClientAccountAssignedNumbers } = require('../utils/clientNumberOwnership');
 
@@ -434,6 +435,24 @@ exports.getPortingRequest = async (req, res) => {
   } catch (error) {
     console.error('Porting request detail error:', error);
     return res.status(500).json({ error: 'Failed to load porting request' });
+  }
+};
+
+exports.getPortingRequestReadiness = async (req, res) => {
+  try {
+    const request = await populatePortingRequest(PortingRequest.findById(req.params.id));
+    if (!request) {
+      return res.status(404).json({ error: 'Porting request not found' });
+    }
+
+    return res.json({
+      readiness: buildPortingReadiness(request),
+      createsTwilioResources: false,
+      callsTwilioApi: false,
+    });
+  } catch (error) {
+    console.error('Porting request readiness error:', error);
+    return res.status(500).json({ error: 'Failed to validate porting readiness' });
   }
 };
 

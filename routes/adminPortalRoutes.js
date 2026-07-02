@@ -43,6 +43,7 @@ const {
   checkPortingRequestPortability,
   checkStandalonePhoneNumberPortability,
   createPortingRequest,
+  getPortingRequestReadiness,
   getPortingRequest,
   listPortingRequests,
   updatePortingRequest,
@@ -141,6 +142,7 @@ router.patch('/client-numbers/:numberId/archive', archiveClientNumberById);
 router.get('/porting-requests', listPortingRequests);
 router.post('/porting-requests/portability-check', checkStandalonePhoneNumberPortability);
 router.post('/porting-requests', createPortingRequest);
+router.get('/porting-requests/:id/readiness', getPortingRequestReadiness);
 router.get('/porting-requests/:id', getPortingRequest);
 router.put('/porting-requests/:id', updatePortingRequest);
 router.patch('/porting-requests/:id/status', updatePortingRequestStatus);
