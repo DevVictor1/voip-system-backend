@@ -4,6 +4,7 @@ const ClientAccount = require('../models/ClientAccount');
 const ClientPhoneNumber = require('../models/ClientPhoneNumber');
 const PortingRequest = require('../models/PortingRequest');
 const User = require('../models/User');
+const { checkPhoneNumberPortability } = require('../services/twilioPortingService');
 const { syncClientAccountAssignedNumbers } = require('../utils/clientNumberOwnership');
 
 const PORTING_STATUSES = new Set(['draft', 'review', 'submitted', 'scheduled', 'porting', 'completed', 'rejected', 'cancelled']);
@@ -138,6 +139,10 @@ const sanitizePhoneNumbers = async (items = [], clientAccountId) => {
       notPortableReason: normalizeTrimmedText(item?.notPortableReason),
       notPortableReasonCode: normalizeTrimmedText(item?.notPortableReasonCode),
       numberType: normalizeTrimmedText(item?.numberType),
+      country: normalizeTrimmedText(item?.country),
+      pinAndAccountNumberRequired: typeof item?.pinAndAccountNumberRequired === 'boolean'
+        ? item.pinAndAccountNumberRequired
+        : null,
       twilioPortInPhoneNumberSid: normalizeTrimmedText(item?.twilioPortInPhoneNumberSid),
       twilioIncomingPhoneNumberSid: normalizeTrimmedText(item?.twilioIncomingPhoneNumberSid),
       notes: normalizeTrimmedText(item?.notes),
@@ -257,6 +262,10 @@ const sanitizePortingRequest = (request) => ({
     notPortableReason: item.notPortableReason || '',
     notPortableReasonCode: item.notPortableReasonCode || '',
     numberType: item.numberType || '',
+    country: item.country || '',
+    pinAndAccountNumberRequired: typeof item.pinAndAccountNumberRequired === 'boolean'
+      ? item.pinAndAccountNumberRequired
+      : null,
     twilioPortInPhoneNumberSid: item.twilioPortInPhoneNumberSid || '',
     twilioIncomingPhoneNumberSid: item.twilioIncomingPhoneNumberSid || '',
     notes: item.notes || '',
@@ -323,6 +332,49 @@ const sanitizePortingRequest = (request) => ({
   updatedAt: request.updatedAt,
 });
 
+const applyPortabilityResultToNumber = (item, result) => {
+  item.portabilityStatus = result.portabilityStatus || '';
+  item.portabilityCheckedAt = result.portabilityCheckedAt || new Date();
+  item.portable = typeof result.portable === 'boolean' ? result.portable : null;
+  item.notPortableReason = result.notPortableReason || result.twilioMessage || '';
+  item.notPortableReasonCode = result.notPortableReasonCode || result.twilioCode || '';
+  item.numberType = result.numberType || '';
+  item.country = result.country || '';
+  item.pinAndAccountNumberRequired = typeof result.pinAndAccountNumberRequired === 'boolean'
+    ? result.pinAndAccountNumberRequired
+    : null;
+};
+
+const buildPortabilityErrorPayload = (error, fallbackMessage) => {
+  if (error?.details) {
+    return {
+      error: error.details.message || fallbackMessage,
+      status: error.details.status || 'twilio_error',
+      twilioCode: error.details.twilioCode || null,
+      twilioMessage: error.details.twilioMessage || '',
+      httpStatus: error.details.httpStatus || null,
+    };
+  }
+
+  if (error?.code === 'TWILIO_PORTING_CONFIG_MISSING') {
+    return {
+      error: 'Twilio porting credentials are not configured',
+      status: 'configuration_error',
+      twilioCode: null,
+      twilioMessage: '',
+      httpStatus: null,
+    };
+  }
+
+  return {
+    error: error?.message || fallbackMessage,
+    status: 'network_or_configuration_error',
+    twilioCode: null,
+    twilioMessage: error?.message || '',
+    httpStatus: null,
+  };
+};
+
 exports.listPortingRequests = async (req, res) => {
   try {
     const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
@@ -349,6 +401,77 @@ exports.getPortingRequest = async (req, res) => {
   } catch (error) {
     console.error('Porting request detail error:', error);
     return res.status(500).json({ error: 'Failed to load porting request' });
+  }
+};
+
+exports.checkStandalonePhoneNumberPortability = async (req, res) => {
+  try {
+    const phoneNumber = normalizeTrimmedText(req.body?.phoneNumber || req.query?.phoneNumber);
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    const result = await checkPhoneNumberPortability(phoneNumber);
+    return res.json({
+      result,
+      createdOrModifiedTwilioData: false,
+      checkedTwilioEndpoint: 'Portability',
+    });
+  } catch (error) {
+    console.error('Standalone portability check error:', {
+      message: error.message,
+      status: error?.details?.status || error?.code || 'unknown',
+    });
+    const payload = buildPortabilityErrorPayload(error, 'Failed to check phone number portability');
+    return res.status(payload.httpStatus && payload.httpStatus >= 500 ? 502 : 400).json(payload);
+  }
+};
+
+exports.checkPortingRequestPortability = async (req, res) => {
+  try {
+    const request = await PortingRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Porting request not found' });
+    }
+
+    const requestedPhoneNumber = normalizeTrimmedText(req.body?.phoneNumber || req.query?.phoneNumber);
+    const numbersToCheck = (request.phoneNumbers || []).filter((item) => {
+      const phoneNumber = normalizeTrimmedText(item.phoneNumber);
+      if (!phoneNumber) return false;
+      return requestedPhoneNumber
+        ? phoneNumber === requestedPhoneNumber
+        : true;
+    });
+
+    if (numbersToCheck.length === 0) {
+      return res.status(404).json({ error: 'Phone number not found on this porting request' });
+    }
+
+    const results = [];
+    for (const item of numbersToCheck) {
+      const result = await checkPhoneNumberPortability(item.phoneNumber);
+      applyPortabilityResultToNumber(item, result);
+      results.push(result);
+    }
+
+    request.markModified('phoneNumbers');
+    await request.save();
+
+    const populated = await populatePortingRequest(PortingRequest.findById(request._id));
+    return res.json({
+      portingRequest: sanitizePortingRequest(populated),
+      results,
+      createdOrModifiedTwilioData: false,
+      checkedTwilioEndpoint: 'Portability',
+    });
+  } catch (error) {
+    console.error('Porting request portability check error:', {
+      message: error.message,
+      status: error?.details?.status || error?.code || 'unknown',
+      requestId: req.params.id,
+    });
+    const payload = buildPortabilityErrorPayload(error, 'Failed to check porting request portability');
+    return res.status(payload.httpStatus && payload.httpStatus >= 500 ? 502 : 400).json(payload);
   }
 };
 

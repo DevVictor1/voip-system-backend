@@ -40,6 +40,8 @@ const {
 const {
   activatePortingNumbers,
   archivePortingRequest,
+  checkPortingRequestPortability,
+  checkStandalonePhoneNumberPortability,
   createPortingRequest,
   getPortingRequest,
   listPortingRequests,
@@ -136,10 +138,12 @@ router.put('/client-numbers/:numberId', updateClientNumberById);
 router.patch('/client-numbers/:numberId/archive', archiveClientNumberById);
 
 router.get('/porting-requests', listPortingRequests);
+router.post('/porting-requests/portability-check', checkStandalonePhoneNumberPortability);
 router.post('/porting-requests', createPortingRequest);
 router.get('/porting-requests/:id', getPortingRequest);
 router.put('/porting-requests/:id', updatePortingRequest);
 router.patch('/porting-requests/:id/status', updatePortingRequestStatus);
+router.post('/porting-requests/:id/portability-check', checkPortingRequestPortability);
 router.post('/porting-requests/:id/documents', handlePortingDocumentUpload, uploadPortingDocument);
 router.patch('/porting-requests/:id/archive', archivePortingRequest);
 router.post('/porting-requests/:id/activate', activatePortingNumbers);

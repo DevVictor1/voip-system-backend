@@ -80,6 +80,15 @@ const portingPhoneNumberSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    country: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    pinAndAccountNumberRequired: {
+      type: Boolean,
+      default: null,
+    },
     twilioPortInPhoneNumberSid: {
       type: String,
       default: '',
