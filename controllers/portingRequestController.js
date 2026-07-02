@@ -10,7 +10,7 @@ const {
   uploadUtilityBillDocument,
 } = require('../services/twilioDocumentService');
 const { buildPortingReadiness } = require('../services/portingReadinessService');
-const { checkPhoneNumberPortability } = require('../services/twilioPortingService');
+const { checkPhoneNumberPortability, submitPortInRequest } = require('../services/twilioPortingService');
 const { syncClientAccountAssignedNumbers } = require('../utils/clientNumberOwnership');
 
 const PORTING_STATUSES = new Set(['draft', 'review', 'submitted', 'scheduled', 'porting', 'completed', 'rejected', 'cancelled']);
@@ -151,6 +151,7 @@ const sanitizePhoneNumbers = async (items = [], clientAccountId) => {
         ? item.pinAndAccountNumberRequired
         : null,
       twilioPortInPhoneNumberSid: normalizeTrimmedText(item?.twilioPortInPhoneNumberSid),
+      twilioPortInPhoneNumberStatus: normalizeTrimmedText(item?.twilioPortInPhoneNumberStatus),
       twilioIncomingPhoneNumberSid: normalizeTrimmedText(item?.twilioIncomingPhoneNumberSid),
       notes: normalizeTrimmedText(item?.notes),
     });
@@ -217,6 +218,7 @@ const populatePortingRequest = (query) => query
   .populate('clientAccountId', 'companyName accountStatus resellerId')
   .populate('resellerId', 'companyName status')
   .populate('phoneNumbers.assignedUserId', 'name email role clientAccountId')
+  .populate('submittedToTwilioBy', 'name email')
   .populate('activatedBy', 'name email')
   .populate('archivedBy', 'name email');
 
@@ -274,6 +276,7 @@ const sanitizePortingRequest = (request) => ({
       ? item.pinAndAccountNumberRequired
       : null,
     twilioPortInPhoneNumberSid: item.twilioPortInPhoneNumberSid || '',
+    twilioPortInPhoneNumberStatus: item.twilioPortInPhoneNumberStatus || '',
     twilioIncomingPhoneNumberSid: item.twilioIncomingPhoneNumberSid || '',
     notes: item.notes || '',
   })),
@@ -325,6 +328,11 @@ const sanitizePortingRequest = (request) => ({
   })),
   twilioPortOrderId: request.twilioPortOrderId || '',
   twilioPortInRequestSid: request.twilioPortInRequestSid || '',
+  twilioPortInRequestStatus: request.twilioPortInRequestStatus || '',
+  supportTicketId: request.supportTicketId || '',
+  signatureRequestUrl: request.signatureRequestUrl || '',
+  submittedToTwilioAt: request.submittedToTwilioAt,
+  submittedToTwilioByName: request.submittedToTwilioByName || request.submittedToTwilioBy?.name || '',
   webhookEvents: (Array.isArray(request.webhookEvents) ? request.webhookEvents : []).map((entry) => ({
     eventType: entry.eventType || '',
     status: entry.status || '',
@@ -409,6 +417,95 @@ const buildTwilioDocumentErrorPayload = (error, fallbackMessage) => {
   };
 };
 
+const buildTwilioSubmitErrorPayload = (error, fallbackMessage) => {
+  if (error?.details) {
+    return {
+      error: error.details.message || fallbackMessage,
+      status: error.details.status || 'twilio_error',
+      twilioCode: error.details.twilioCode || null,
+      twilioMessage: error.details.twilioMessage || '',
+      httpStatus: error.details.httpStatus || null,
+    };
+  }
+
+  if (error?.code === 'TWILIO_PORTING_CONFIG_MISSING') {
+    return {
+      error: 'Twilio porting credentials are not configured',
+      status: 'configuration_error',
+      twilioCode: null,
+      twilioMessage: '',
+      httpStatus: null,
+    };
+  }
+
+  return {
+    error: error?.message || fallbackMessage,
+    status: 'network_or_configuration_error',
+    twilioCode: null,
+    twilioMessage: error?.message || '',
+    httpStatus: null,
+  };
+};
+
+const getTwilioRecentBillDocumentSids = (request) => (
+  Array.isArray(request?.documents)
+    ? request.documents
+      .filter((document) => (
+        document?.documentType === 'bill'
+        && normalizeTrimmedText(document?.twilioDocumentSid)
+      ))
+      .map((document) => normalizeTrimmedText(document.twilioDocumentSid))
+    : []
+);
+
+const hasUnsupportedPortInNumber = (request) => (
+  Array.isArray(request?.phoneNumbers)
+  && request.phoneNumbers.some((item) => {
+    const type = normalizeTrimmedText(item?.numberType).toLowerCase();
+    return type.includes('toll');
+  })
+);
+
+const hasMissingOrNonPortableNumber = (request) => (
+  Array.isArray(request?.phoneNumbers)
+  && request.phoneNumbers.some((item) => (
+    !item?.portabilityCheckedAt || item?.portable !== true
+  ))
+);
+
+const applyTwilioPortInResultToRequest = (request, result, user) => {
+  request.twilioPortInRequestSid = result.portInRequestSid;
+  request.twilioPortInRequestStatus = result.portInRequestStatus || 'In Progress';
+  request.supportTicketId = result.supportTicketId || '';
+  request.signatureRequestUrl = result.signatureRequestUrl || '';
+  request.submittedToTwilioAt = new Date();
+  request.submittedToTwilioBy = user?._id || null;
+  request.submittedToTwilioByName = getActorName(user);
+  request.status = 'submitted';
+
+  const resultByPhoneNumber = new Map(
+    (Array.isArray(result.phoneNumbers) ? result.phoneNumbers : [])
+      .filter((item) => normalizeTrimmedText(item.phoneNumber))
+      .map((item) => [normalizeTrimmedText(item.phoneNumber), item])
+  );
+
+  for (const item of request.phoneNumbers || []) {
+    const phoneResult = resultByPhoneNumber.get(normalizeTrimmedText(item.phoneNumber));
+    if (!phoneResult) continue;
+
+    item.twilioPortInPhoneNumberSid = phoneResult.portInPhoneNumberSid || item.twilioPortInPhoneNumberSid || '';
+    item.twilioPortInPhoneNumberStatus = phoneResult.portInPhoneNumberStatus || item.twilioPortInPhoneNumberStatus || '';
+    if (typeof phoneResult.portable === 'boolean') {
+      item.portable = phoneResult.portable;
+    }
+    item.notPortableReason = phoneResult.notPortabilityReason || item.notPortableReason || '';
+    item.notPortableReasonCode = phoneResult.notPortabilityReasonCode || item.notPortableReasonCode || '';
+  }
+
+  request.markModified('phoneNumbers');
+  request.statusHistory.push(buildStatusEntry('submitted', 'Submitted to Twilio', user));
+};
+
 exports.listPortingRequests = async (req, res) => {
   try {
     const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
@@ -453,6 +550,83 @@ exports.getPortingRequestReadiness = async (req, res) => {
   } catch (error) {
     console.error('Porting request readiness error:', error);
     return res.status(500).json({ error: 'Failed to validate porting readiness' });
+  }
+};
+
+exports.submitPortingRequestToTwilio = async (req, res) => {
+  try {
+    const confirmed = req.body?.confirm === true || req.body?.confirm === 'true';
+    const confirmationText = normalizeTrimmedText(req.body?.confirmationText);
+    if (!confirmed || confirmationText !== 'SUBMIT TO TWILIO') {
+      return res.status(400).json({
+        error: 'Twilio submission confirmation is required',
+        message: 'Type SUBMIT TO TWILIO to confirm live Twilio PortIn submission.',
+      });
+    }
+
+    const request = await PortingRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Porting request not found' });
+    }
+
+    if (request.twilioPortInRequestSid) {
+      const populatedExisting = await populatePortingRequest(PortingRequest.findById(request._id));
+      return res.status(409).json({
+        error: 'This porting request has already been submitted to Twilio',
+        portingRequest: sanitizePortingRequest(populatedExisting),
+      });
+    }
+
+    if (request.activatedAt) {
+      return res.status(409).json({
+        error: 'This porting request has already been activated manually and cannot be submitted to Twilio',
+      });
+    }
+
+    const readiness = buildPortingReadiness(request);
+    if (!readiness.ready) {
+      return res.status(400).json({
+        error: 'Porting request is not ready for Twilio submission',
+        readiness,
+      });
+    }
+
+    if (hasUnsupportedPortInNumber(request)) {
+      return res.status(400).json({
+        error: 'Toll-free or unsupported numbers cannot be submitted through this Twilio PortIn workflow',
+      });
+    }
+
+    if (hasMissingOrNonPortableNumber(request)) {
+      return res.status(400).json({
+        error: 'All phone numbers must have completed portability checks and be portable before submission',
+      });
+    }
+
+    if (getTwilioRecentBillDocumentSids(request).length === 0) {
+      return res.status(400).json({
+        error: 'A Recent Bill must be uploaded to Twilio before submission',
+      });
+    }
+
+    const { result } = await submitPortInRequest(request);
+    applyTwilioPortInResultToRequest(request, result, req.user);
+    await request.save();
+
+    const populated = await populatePortingRequest(PortingRequest.findById(request._id));
+    return res.json({
+      portingRequest: sanitizePortingRequest(populated),
+      twilioSubmission: result,
+      activatedNumbers: false,
+    });
+  } catch (error) {
+    console.error('Twilio PortIn submission error:', {
+      message: error.message,
+      status: error?.details?.status || error?.code || 'unknown',
+      requestId: req.params.id,
+    });
+    const payload = buildTwilioSubmitErrorPayload(error, 'Failed to submit porting request to Twilio');
+    return res.status(payload.httpStatus && payload.httpStatus >= 500 ? 502 : 400).json(payload);
   }
 };
 
@@ -567,6 +741,10 @@ exports.updatePortingRequest = async (req, res) => {
     const previousStatus = request.status;
     if (request.activatedAt && previousStatus === 'completed' && payloadResult.payload.status !== 'completed') {
       return sendActivationCompletedError(res);
+    }
+
+    if (request.twilioPortInRequestSid) {
+      payloadResult.payload.twilioPortInRequestSid = request.twilioPortInRequestSid;
     }
 
     Object.assign(request, payloadResult.payload);

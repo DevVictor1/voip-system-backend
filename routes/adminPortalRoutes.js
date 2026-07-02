@@ -46,6 +46,7 @@ const {
   getPortingRequestReadiness,
   getPortingRequest,
   listPortingRequests,
+  submitPortingRequestToTwilio,
   updatePortingRequest,
   updatePortingRequestStatus,
   uploadPortingDocument,
@@ -147,6 +148,7 @@ router.get('/porting-requests/:id', getPortingRequest);
 router.put('/porting-requests/:id', updatePortingRequest);
 router.patch('/porting-requests/:id/status', updatePortingRequestStatus);
 router.post('/porting-requests/:id/portability-check', checkPortingRequestPortability);
+router.post('/porting-requests/:id/twilio-submit', submitPortingRequestToTwilio);
 router.post('/porting-requests/:id/documents', handlePortingDocumentUpload, uploadPortingDocument);
 router.post('/porting-requests/:id/documents/:documentId/twilio-upload', uploadPortingDocumentToTwilio);
 router.patch('/porting-requests/:id/archive', archivePortingRequest);

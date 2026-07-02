@@ -94,6 +94,11 @@ const portingPhoneNumberSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    twilioPortInPhoneNumberStatus: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     twilioIncomingPhoneNumberSid: {
       type: String,
       default: '',
@@ -402,6 +407,35 @@ const portingRequestSchema = new mongoose.Schema(
       trim: true,
     },
     twilioPortInRequestSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioPortInRequestStatus: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    supportTicketId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    signatureRequestUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    submittedToTwilioAt: {
+      type: Date,
+      default: null,
+    },
+    submittedToTwilioBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    submittedToTwilioByName: {
       type: String,
       default: '',
       trim: true,

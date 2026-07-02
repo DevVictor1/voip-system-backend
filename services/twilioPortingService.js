@@ -1,7 +1,8 @@
 const https = require('https');
 
-const TWILIO_PORTABILITY_HOST = 'numbers.twilio.com';
+const TWILIO_PORTING_HOST = 'numbers.twilio.com';
 const TWILIO_PORTABILITY_PATH_PREFIX = '/v1/Porting/Portability/PhoneNumber/';
+const TWILIO_PORTIN_PATH = '/v1/Porting/PortIn';
 
 const normalizeTwilioText = (value) => String(value || '').trim();
 
@@ -44,7 +45,7 @@ const normalizePortabilityPayload = (phoneNumber, payload = {}, statusCode = 200
   };
 };
 
-const classifyTwilioError = (statusCode, payload = {}) => {
+const classifyTwilioError = (statusCode, payload = {}, resourceName = 'Twilio Porting API') => {
   const twilioCode = normalizeTwilioText(payload.code);
   const twilioMessage = normalizeTwilioText(payload.message || payload.error);
 
@@ -61,7 +62,7 @@ const classifyTwilioError = (statusCode, payload = {}) => {
   if (statusCode === 403 || twilioCode === '20403') {
     return {
       status: 'permission_error',
-      message: twilioMessage || 'Twilio account does not have access to the Portability API.',
+      message: twilioMessage || `Twilio account does not have access to the ${resourceName}.`,
       twilioCode,
       twilioMessage,
       httpStatus: statusCode,
@@ -71,7 +72,7 @@ const classifyTwilioError = (statusCode, payload = {}) => {
   if (statusCode >= 500) {
     return {
       status: 'twilio_unavailable',
-      message: twilioMessage || 'Twilio Portability API is temporarily unavailable.',
+      message: twilioMessage || `${resourceName} is temporarily unavailable.`,
       twilioCode,
       twilioMessage,
       httpStatus: statusCode,
@@ -80,24 +81,45 @@ const classifyTwilioError = (statusCode, payload = {}) => {
 
   return {
     status: 'twilio_error',
-    message: twilioMessage || 'Twilio Portability API returned an unexpected response.',
+    message: twilioMessage || `${resourceName} returned an unexpected response.`,
     twilioCode,
     twilioMessage,
     httpStatus: statusCode,
   };
 };
 
-const requestJson = ({ path, apiKey, apiSecret }) => new Promise((resolve, reject) => {
+const parseTwilioJson = (body) => {
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch (error) {
+    return { message: 'Twilio returned a non-JSON response' };
+  }
+};
+
+const requestJson = ({
+  path,
+  apiKey,
+  apiSecret,
+  method = 'GET',
+  body = null,
+  resourceName = 'Twilio Porting API',
+  resolveHttpErrors = false,
+}) => new Promise((resolve, reject) => {
   const auth = Buffer.from(`${apiKey}:${apiSecret}`).toString('base64');
+  const requestBody = body ? JSON.stringify(body) : null;
   const request = https.request(
     {
-      hostname: TWILIO_PORTABILITY_HOST,
-      method: 'GET',
+      hostname: TWILIO_PORTING_HOST,
+      method,
       path,
       timeout: 15000,
       headers: {
         Authorization: `Basic ${auth}`,
         Accept: 'application/json',
+        ...(requestBody ? {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(requestBody),
+        } : {}),
       },
     },
     (response) => {
@@ -108,14 +130,22 @@ const requestJson = ({ path, apiKey, apiSecret }) => new Promise((resolve, rejec
         body += chunk;
       });
       response.on('end', () => {
-        let payload = {};
-        try {
-          payload = body ? JSON.parse(body) : {};
-        } catch (error) {
-          payload = { message: 'Twilio returned a non-JSON response' };
+        const payload = parseTwilioJson(body);
+
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          resolve({ statusCode: response.statusCode, payload });
+          return;
         }
 
-        resolve({ statusCode: response.statusCode, payload });
+        if (resolveHttpErrors) {
+          resolve({ statusCode: response.statusCode, payload });
+          return;
+        }
+
+        const classified = classifyTwilioError(response.statusCode, payload, resourceName);
+        const error = new Error(classified.message);
+        error.details = classified;
+        reject(error);
       });
     }
   );
@@ -124,7 +154,98 @@ const requestJson = ({ path, apiKey, apiSecret }) => new Promise((resolve, rejec
     request.destroy(new Error('Twilio Portability API request timed out'));
   });
   request.on('error', reject);
+  if (requestBody) {
+    request.write(requestBody);
+  }
   request.end();
+});
+
+const formatDateOnly = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+};
+
+const getUtilityBillDocumentSids = (request) => (
+  Array.isArray(request?.documents)
+    ? request.documents
+      .filter((document) => document?.documentType === 'bill' && normalizeTwilioText(document?.twilioDocumentSid))
+      .map((document) => normalizeTwilioText(document.twilioDocumentSid))
+    : []
+);
+
+const buildTwilioPortInPayload = (request, accountSid) => {
+  const serviceAddress = request?.serviceAddress || {};
+  const authorizedSigner = request?.authorizedSigner || {};
+  const payload = {
+    account_sid: accountSid,
+    notification_emails: Array.isArray(request?.notificationEmails) ? request.notificationEmails : [],
+    losing_carrier_information: {
+      customer_type: normalizeTwilioText(request?.customerType),
+      customer_name: normalizeTwilioText(request?.customerName),
+      account_number: normalizeTwilioText(request?.accountNumber),
+      account_telephone_number: normalizeTwilioText(request?.billingTelephoneNumber),
+      authorized_representative: normalizeTwilioText(authorizedSigner.name),
+      authorized_representative_email: normalizeTwilioText(authorizedSigner.email),
+      address_sid: null,
+      address: {
+        street: normalizeTwilioText(serviceAddress.street),
+        street_2: normalizeTwilioText(serviceAddress.street2),
+        city: normalizeTwilioText(serviceAddress.city),
+        state: normalizeTwilioText(serviceAddress.state),
+        zip: normalizeTwilioText(serviceAddress.postalCode),
+        country: normalizeTwilioText(serviceAddress.country) || 'US',
+      },
+    },
+    phone_numbers: (Array.isArray(request?.phoneNumbers) ? request.phoneNumbers : [])
+      .filter((item) => normalizeTwilioText(item?.phoneNumber))
+      .map((item) => ({
+        phone_number: normalizeTwilioText(item.phoneNumber),
+        pin: normalizeTwilioText(item.pinOrPasscode || request?.pinOrPasscode) || null,
+      })),
+    documents: getUtilityBillDocumentSids(request),
+  };
+
+  const targetPortInDate = formatDateOnly(request?.desiredPortDate);
+  if (targetPortInDate) {
+    payload.target_port_in_date = targetPortInDate;
+  }
+
+  if (normalizeTwilioText(request?.targetPortInTimeRangeStart)) {
+    payload.target_port_in_time_range_start = normalizeTwilioText(request.targetPortInTimeRangeStart);
+  }
+
+  if (normalizeTwilioText(request?.targetPortInTimeRangeEnd)) {
+    payload.target_port_in_time_range_end = normalizeTwilioText(request.targetPortInTimeRangeEnd);
+  }
+
+  return payload;
+};
+
+const normalizePortInSubmissionPayload = (payload = {}, statusCode = 200) => ({
+  accountSid: normalizeTwilioText(payload.account_sid || payload.accountSid),
+  targetPortInDate: normalizeTwilioText(payload.target_port_in_date || payload.targetPortInDate),
+  targetPortInTimeRangeStart: normalizeTwilioText(payload.target_port_in_time_range_start || payload.targetPortInTimeRangeStart),
+  targetPortInTimeRangeEnd: normalizeTwilioText(payload.target_port_in_time_range_end || payload.targetPortInTimeRangeEnd),
+  portInRequestSid: normalizeTwilioText(payload.port_in_request_sid || payload.portInRequestSid),
+  portInRequestStatus: normalizeTwilioText(payload.port_in_request_status || payload.portInRequestStatus),
+  supportTicketId: normalizeTwilioText(payload.support_ticket_id || payload.supportTicketId),
+  signatureRequestUrl: normalizeTwilioText(payload.signature_request_url || payload.signatureRequestUrl),
+  phoneNumbers: Array.isArray(payload.phone_numbers || payload.phoneNumbers)
+    ? (payload.phone_numbers || payload.phoneNumbers).map((item) => ({
+      phoneNumber: normalizeTwilioText(item.phone_number || item.phoneNumber),
+      portable: typeof item.portable === 'boolean' ? item.portable : null,
+      portInPhoneNumberSid: normalizeTwilioText(item.port_in_phone_number_sid || item.portInPhoneNumberSid),
+      portInPhoneNumberStatus: normalizeTwilioText(item.port_in_phone_number_status || item.portInPhoneNumberStatus),
+      notPortabilityReason: normalizeTwilioText(item.not_portability_reason || item.notPortabilityReason),
+      notPortabilityReasonCode: normalizeTwilioText(item.not_portability_reason_code || item.notPortabilityReasonCode),
+      rejectionReason: normalizeTwilioText(item.rejection_reason || item.rejectionReason),
+      rejectionReasonCode: normalizeTwilioText(item.rejection_reason_code || item.rejectionReasonCode),
+    }))
+    : [],
+  documents: Array.isArray(payload.documents) ? payload.documents.map(normalizeTwilioText).filter(Boolean) : [],
+  twilioHttpStatus: statusCode,
 });
 
 const checkPhoneNumberPortability = async (phoneNumber) => {
@@ -138,7 +259,13 @@ const checkPhoneNumberPortability = async (phoneNumber) => {
   const { accountSid, apiKey, apiSecret } = getTwilioPortingCredentials();
   const query = `?TargetAccountSid=${encodeURIComponent(accountSid)}`;
   const path = `${TWILIO_PORTABILITY_PATH_PREFIX}${encodeURIComponent(normalizedPhoneNumber)}${query}`;
-  const { statusCode, payload } = await requestJson({ path, apiKey, apiSecret });
+  const { statusCode, payload } = await requestJson({
+    path,
+    apiKey,
+    apiSecret,
+    resourceName: 'Twilio Portability API',
+    resolveHttpErrors: true,
+  });
 
   if (statusCode >= 200 && statusCode < 300) {
     return normalizePortabilityPayload(normalizedPhoneNumber, payload, statusCode);
@@ -148,12 +275,45 @@ const checkPhoneNumberPortability = async (phoneNumber) => {
     return normalizePortabilityPayload(normalizedPhoneNumber, payload, statusCode);
   }
 
-  const classified = classifyTwilioError(statusCode, payload);
+  const classified = classifyTwilioError(statusCode, payload, 'Twilio Portability API');
   const error = new Error(classified.message);
   error.details = classified;
   throw error;
 };
 
+const submitPortInRequest = async (request) => {
+  const { accountSid, apiKey, apiSecret } = getTwilioPortingCredentials();
+  const body = buildTwilioPortInPayload(request, accountSid);
+  const { statusCode, payload } = await requestJson({
+    path: TWILIO_PORTIN_PATH,
+    apiKey,
+    apiSecret,
+    method: 'POST',
+    body,
+    resourceName: 'Twilio PortIn API',
+  });
+
+  const result = normalizePortInSubmissionPayload(payload, statusCode);
+  if (!result.portInRequestSid) {
+    const error = new Error('Twilio did not return a PortIn Request SID');
+    error.details = {
+      status: 'twilio_error',
+      message: 'Twilio did not return a PortIn Request SID',
+      twilioCode: normalizeTwilioText(payload?.code),
+      twilioMessage: normalizeTwilioText(payload?.message),
+      httpStatus: statusCode,
+    };
+    throw error;
+  }
+
+  return {
+    result,
+    submittedPayload: body,
+  };
+};
+
 module.exports = {
+  buildTwilioPortInPayload,
   checkPhoneNumberPortability,
+  submitPortInRequest,
 };
