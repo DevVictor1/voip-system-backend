@@ -506,6 +506,18 @@ const applyTwilioPortInResultToRequest = (request, result, user) => {
   request.statusHistory.push(buildStatusEntry('submitted', 'Submitted to Twilio', user));
 };
 
+const buildPortingDocumentPayload = (file, documentType, user) => ({
+  documentType: normalizeDocumentType(documentType),
+  fileName: file.originalname || file.filename,
+  fileType: file.mimetype,
+  fileSize: file.size,
+  fileUrl: `/uploads/porting-documents/${file.filename}`,
+  storagePath: path.posix.join('porting-documents', file.filename),
+  uploadedBy: user?._id || null,
+  uploadedByName: getActorName(user),
+  uploadedAt: new Date(),
+});
+
 exports.listPortingRequests = async (req, res) => {
   try {
     const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
@@ -804,17 +816,7 @@ exports.uploadPortingDocument = async (req, res) => {
       return res.status(404).json({ error: 'Porting request not found' });
     }
 
-    request.documents.push({
-      documentType: normalizeDocumentType(req.body?.documentType),
-      fileName: req.file.originalname || req.file.filename,
-      fileType: req.file.mimetype,
-      fileSize: req.file.size,
-      fileUrl: `/uploads/porting-documents/${req.file.filename}`,
-      storagePath: path.posix.join('porting-documents', req.file.filename),
-      uploadedBy: req.user?._id || null,
-      uploadedByName: getActorName(req.user),
-      uploadedAt: new Date(),
-    });
+    request.documents.push(buildPortingDocumentPayload(req.file, req.body?.documentType, req.user));
     request.statusHistory.push(buildStatusEntry(request.status, 'Porting document uploaded', req.user));
     await request.save();
 
@@ -823,6 +825,56 @@ exports.uploadPortingDocument = async (req, res) => {
   } catch (error) {
     console.error('Porting document upload error:', error);
     return res.status(500).json({ error: 'Failed to upload porting document' });
+  }
+};
+
+exports.replacePortingDocument = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Document file is required' });
+    }
+
+    const request = await PortingRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Porting request not found' });
+    }
+
+    const document = request.documents.id(req.params.documentId);
+    if (!document) {
+      return res.status(404).json({ error: 'Porting document not found' });
+    }
+
+    const replacementPayload = buildPortingDocumentPayload(
+      req.file,
+      req.body?.documentType || document.documentType,
+      req.user
+    );
+    const hadTwilioDocumentSid = Boolean(document.twilioDocumentSid);
+
+    Object.assign(document, replacementPayload, {
+      twilioDocumentSid: '',
+      twilioDocumentType: '',
+      twilioUploadedAt: null,
+    });
+
+    request.statusHistory.push(buildStatusEntry(
+      request.status,
+      hadTwilioDocumentSid
+        ? 'Porting document replaced; Twilio document upload must be repeated'
+        : 'Porting document replaced',
+      req.user
+    ));
+    await request.save();
+
+    const populated = await populatePortingRequest(PortingRequest.findById(request._id));
+    return res.json({
+      portingRequest: sanitizePortingRequest(populated),
+      twilioDocumentCleared: hadTwilioDocumentSid,
+      oldFilePreserved: true,
+    });
+  } catch (error) {
+    console.error('Porting document replace error:', error);
+    return res.status(500).json({ error: 'Failed to replace porting document' });
   }
 };
 
