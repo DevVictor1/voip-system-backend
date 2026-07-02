@@ -11,6 +11,24 @@ const DOCUMENT_TYPES = new Set(['loa', 'bill', 'csr', 'other']);
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
+const normalizeStringList = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeTrimmedText(item)).filter(Boolean);
+  }
+
+  return normalizeTrimmedText(value)
+    .split(',')
+    .map((item) => normalizeTrimmedText(item))
+    .filter(Boolean);
+};
+
+const normalizeCustomerType = (value) => {
+  const normalized = normalizeTrimmedText(value).toLowerCase();
+  if (normalized === 'business') return 'Business';
+  if (normalized === 'individual') return 'Individual';
+  return '';
+};
+
 const normalizeOptionalObjectId = (value) => {
   const trimmed = normalizeTrimmedText(value);
   if (!trimmed) return null;
@@ -113,6 +131,15 @@ const sanitizePhoneNumbers = async (items = [], clientAccountId) => {
       capabilities: normalizeBooleanCapabilities(item?.capabilities),
       assignedUserId: assignedUserId || null,
       assignedDepartment: normalizeTrimmedText(item?.assignedDepartment),
+      pinOrPasscode: normalizeTrimmedText(item?.pinOrPasscode),
+      portabilityStatus: normalizeTrimmedText(item?.portabilityStatus),
+      portabilityCheckedAt: normalizeDate(item?.portabilityCheckedAt),
+      portable: typeof item?.portable === 'boolean' ? item.portable : null,
+      notPortableReason: normalizeTrimmedText(item?.notPortableReason),
+      notPortableReasonCode: normalizeTrimmedText(item?.notPortableReasonCode),
+      numberType: normalizeTrimmedText(item?.numberType),
+      twilioPortInPhoneNumberSid: normalizeTrimmedText(item?.twilioPortInPhoneNumberSid),
+      twilioIncomingPhoneNumberSid: normalizeTrimmedText(item?.twilioIncomingPhoneNumberSid),
       notes: normalizeTrimmedText(item?.notes),
     });
   }
@@ -143,11 +170,15 @@ const buildPayload = async (body = {}) => {
       resellerId: clientAccount.resellerId || null,
       phoneNumbers: phoneResult.phoneNumbers,
       currentCarrier: normalizeTrimmedText(body.currentCarrier) || 'RingCentral',
+      customerType: normalizeCustomerType(body.customerType),
+      customerName: normalizeTrimmedText(body.customerName),
+      notificationEmails: normalizeStringList(body.notificationEmails),
       billingTelephoneNumber: normalizeTrimmedText(body.billingTelephoneNumber),
       accountNumber: normalizeTrimmedText(body.accountNumber),
       pinOrPasscode: normalizeTrimmedText(body.pinOrPasscode),
       serviceAddress: {
         street: normalizeTrimmedText(body.serviceAddress?.street),
+        street2: normalizeTrimmedText(body.serviceAddress?.street2),
         city: normalizeTrimmedText(body.serviceAddress?.city),
         state: normalizeTrimmedText(body.serviceAddress?.state),
         postalCode: normalizeTrimmedText(body.serviceAddress?.postalCode),
@@ -160,9 +191,12 @@ const buildPayload = async (body = {}) => {
         phone: normalizeTrimmedText(body.authorizedSigner?.phone),
       },
       desiredPortDate: normalizeDate(body.desiredPortDate),
+      targetPortInTimeRangeStart: normalizeTrimmedText(body.targetPortInTimeRangeStart),
+      targetPortInTimeRangeEnd: normalizeTrimmedText(body.targetPortInTimeRangeEnd),
       status: normalizeStatus(body.status),
       notes: normalizeTrimmedText(body.notes),
       twilioPortOrderId: normalizeTrimmedText(body.twilioPortOrderId),
+      twilioPortInRequestSid: normalizeTrimmedText(body.twilioPortInRequestSid),
     },
   };
 };
@@ -216,14 +250,27 @@ const sanitizePortingRequest = (request) => ({
         }
       : null,
     assignedDepartment: item.assignedDepartment || '',
+    pinOrPasscode: item.pinOrPasscode || '',
+    portabilityStatus: item.portabilityStatus || '',
+    portabilityCheckedAt: item.portabilityCheckedAt,
+    portable: typeof item.portable === 'boolean' ? item.portable : null,
+    notPortableReason: item.notPortableReason || '',
+    notPortableReasonCode: item.notPortableReasonCode || '',
+    numberType: item.numberType || '',
+    twilioPortInPhoneNumberSid: item.twilioPortInPhoneNumberSid || '',
+    twilioIncomingPhoneNumberSid: item.twilioIncomingPhoneNumberSid || '',
     notes: item.notes || '',
   })),
   currentCarrier: request.currentCarrier || '',
+  customerType: request.customerType || '',
+  customerName: request.customerName || '',
+  notificationEmails: Array.isArray(request.notificationEmails) ? request.notificationEmails : [],
   billingTelephoneNumber: request.billingTelephoneNumber || '',
   accountNumber: request.accountNumber || '',
   pinOrPasscode: request.pinOrPasscode || '',
   serviceAddress: {
     street: request.serviceAddress?.street || '',
+    street2: request.serviceAddress?.street2 || '',
     city: request.serviceAddress?.city || '',
     state: request.serviceAddress?.state || '',
     postalCode: request.serviceAddress?.postalCode || '',
@@ -236,6 +283,8 @@ const sanitizePortingRequest = (request) => ({
     phone: request.authorizedSigner?.phone || '',
   },
   desiredPortDate: request.desiredPortDate,
+  targetPortInTimeRangeStart: request.targetPortInTimeRangeStart || '',
+  targetPortInTimeRangeEnd: request.targetPortInTimeRangeEnd || '',
   status: request.status || 'draft',
   notes: request.notes || '',
   documents: (Array.isArray(request.documents) ? request.documents : []).map((document) => ({
@@ -247,6 +296,9 @@ const sanitizePortingRequest = (request) => ({
     fileUrl: document.fileUrl || '',
     uploadedByName: document.uploadedByName || '',
     uploadedAt: document.uploadedAt,
+    twilioDocumentSid: document.twilioDocumentSid || '',
+    twilioDocumentType: document.twilioDocumentType || '',
+    twilioUploadedAt: document.twilioUploadedAt,
   })),
   statusHistory: (Array.isArray(request.statusHistory) ? request.statusHistory : []).map((entry) => ({
     id: String(entry._id),
@@ -256,6 +308,15 @@ const sanitizePortingRequest = (request) => ({
     createdAt: entry.createdAt,
   })),
   twilioPortOrderId: request.twilioPortOrderId || '',
+  twilioPortInRequestSid: request.twilioPortInRequestSid || '',
+  webhookEvents: (Array.isArray(request.webhookEvents) ? request.webhookEvents : []).map((entry) => ({
+    eventType: entry.eventType || '',
+    status: entry.status || '',
+    portInRequestSid: entry.portInRequestSid || '',
+    portInPhoneNumberSid: entry.portInPhoneNumberSid || '',
+    phoneNumber: entry.phoneNumber || '',
+    receivedAt: entry.receivedAt,
+  })),
   activatedAt: request.activatedAt,
   archivedAt: request.archivedAt,
   createdAt: request.createdAt,

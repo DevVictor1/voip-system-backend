@@ -47,6 +47,49 @@ const portingPhoneNumberSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    pinOrPasscode: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    portabilityStatus: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    portabilityCheckedAt: {
+      type: Date,
+      default: null,
+    },
+    portable: {
+      type: Boolean,
+      default: null,
+    },
+    notPortableReason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    notPortableReasonCode: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    numberType: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioPortInPhoneNumberSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioIncomingPhoneNumberSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     notes: {
       type: String,
       default: '',
@@ -59,6 +102,11 @@ const portingPhoneNumberSchema = new mongoose.Schema(
 const portingAddressSchema = new mongoose.Schema(
   {
     street: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    street2: {
       type: String,
       default: '',
       trim: true,
@@ -161,6 +209,20 @@ const portingDocumentSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    twilioDocumentSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioDocumentType: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioUploadedAt: {
+      type: Date,
+      default: null,
+    },
   }
 );
 
@@ -194,6 +256,45 @@ const portingStatusHistorySchema = new mongoose.Schema(
   }
 );
 
+const portingWebhookEventSchema = new mongoose.Schema(
+  {
+    eventType: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    status: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    portInRequestSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    portInPhoneNumberSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    phoneNumber: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    payload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    receivedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false }
+);
+
 const portingRequestSchema = new mongoose.Schema(
   {
     clientAccountId: {
@@ -214,6 +315,21 @@ const portingRequestSchema = new mongoose.Schema(
       type: String,
       default: 'RingCentral',
       trim: true,
+    },
+    customerType: {
+      type: String,
+      enum: ['', 'Business', 'Individual'],
+      default: '',
+      trim: true,
+    },
+    customerName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    notificationEmails: {
+      type: [String],
+      default: [],
     },
     billingTelephoneNumber: {
       type: String,
@@ -242,6 +358,16 @@ const portingRequestSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    targetPortInTimeRangeStart: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    targetPortInTimeRangeEnd: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     status: {
       type: String,
       enum: PORTING_REQUEST_STATUSES,
@@ -265,6 +391,15 @@ const portingRequestSchema = new mongoose.Schema(
       type: String,
       default: '',
       trim: true,
+    },
+    twilioPortInRequestSid: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    webhookEvents: {
+      type: [portingWebhookEventSchema],
+      default: [],
     },
     activatedAt: {
       type: Date,
