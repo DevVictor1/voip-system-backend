@@ -4,11 +4,17 @@ const ClientAccount = require('../models/ClientAccount');
 const ClientPhoneNumber = require('../models/ClientPhoneNumber');
 const PortingRequest = require('../models/PortingRequest');
 const User = require('../models/User');
+const {
+  TWILIO_PORTING_DOCUMENT_TYPE,
+  TWILIO_SUPPORTED_MIME_TYPES,
+  uploadUtilityBillDocument,
+} = require('../services/twilioDocumentService');
 const { checkPhoneNumberPortability } = require('../services/twilioPortingService');
 const { syncClientAccountAssignedNumbers } = require('../utils/clientNumberOwnership');
 
 const PORTING_STATUSES = new Set(['draft', 'review', 'submitted', 'scheduled', 'porting', 'completed', 'rejected', 'cancelled']);
 const DOCUMENT_TYPES = new Set(['loa', 'bill', 'csr', 'other']);
+const MAX_TWILIO_DOCUMENT_SIZE = 10 * 1024 * 1024;
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -375,6 +381,33 @@ const buildPortabilityErrorPayload = (error, fallbackMessage) => {
   };
 };
 
+const buildTwilioDocumentErrorPayload = (error, fallbackMessage) => {
+  if (error?.details) {
+    return {
+      error: error.details.message || fallbackMessage,
+      status: error.details.status || 'twilio_error',
+      twilioCode: error.details.twilioCode || null,
+      twilioMessage: error.details.twilioMessage || '',
+      httpStatus: error.details.httpStatus || null,
+    };
+  }
+
+  const codeToStatus = {
+    TWILIO_DOCUMENT_CONFIG_MISSING: 'configuration_error',
+    UNSUPPORTED_TWILIO_DOCUMENT_TYPE: 'unsupported_file_type',
+    TWILIO_DOCUMENT_TOO_LARGE: 'file_too_large',
+    INVALID_DOCUMENT_PATH: 'invalid_document_path',
+  };
+
+  return {
+    error: error?.message || fallbackMessage,
+    status: codeToStatus[error?.code] || 'network_or_configuration_error',
+    twilioCode: null,
+    twilioMessage: error?.message || '',
+    httpStatus: null,
+  };
+};
+
 exports.listPortingRequests = async (req, res) => {
   try {
     const includeArchived = String(req.query?.includeArchived || '').toLowerCase() === 'true';
@@ -593,6 +626,80 @@ exports.uploadPortingDocument = async (req, res) => {
   } catch (error) {
     console.error('Porting document upload error:', error);
     return res.status(500).json({ error: 'Failed to upload porting document' });
+  }
+};
+
+exports.uploadPortingDocumentToTwilio = async (req, res) => {
+  try {
+    const request = await PortingRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Porting request not found' });
+    }
+
+    const document = request.documents.id(req.params.documentId);
+    if (!document) {
+      return res.status(404).json({ error: 'Porting document not found' });
+    }
+
+    if (document.twilioDocumentSid) {
+      return res.status(409).json({
+        error: 'This document has already been uploaded to Twilio',
+        status: 'duplicate_twilio_upload',
+      });
+    }
+
+    if (document.documentType !== 'bill') {
+      return res.status(400).json({
+        error: 'Only Recent Bill documents can be uploaded to Twilio for porting',
+        status: 'unsupported_document_type',
+      });
+    }
+
+    const mimeType = normalizeTrimmedText(document.fileType).toLowerCase();
+    if (!TWILIO_SUPPORTED_MIME_TYPES.has(mimeType)) {
+      return res.status(400).json({
+        error: 'Twilio upload supports only PDF, JPG, JPEG, or PNG Recent Bill documents',
+        status: 'unsupported_file_type',
+      });
+    }
+
+    if (Number(document.fileSize || 0) <= 0 || Number(document.fileSize || 0) > MAX_TWILIO_DOCUMENT_SIZE) {
+      return res.status(400).json({
+        error: 'Twilio document must be 10 MB or smaller',
+        status: 'file_too_large',
+      });
+    }
+
+    const result = await uploadUtilityBillDocument({
+      storagePath: document.storagePath,
+      fileName: document.fileName,
+      mimeType: document.fileType,
+      fileSize: document.fileSize,
+      friendlyName: `${request.clientAccountId || 'Client'} ${document.fileName || 'Recent Bill'}`,
+    });
+
+    document.twilioDocumentSid = result.sid;
+    document.twilioDocumentType = result.documentType || TWILIO_PORTING_DOCUMENT_TYPE;
+    document.twilioUploadedAt = new Date();
+    request.statusHistory.push(buildStatusEntry(request.status, 'Recent bill uploaded to Twilio Documents API', req.user));
+    await request.save();
+
+    const populated = await populatePortingRequest(PortingRequest.findById(request._id));
+    return res.json({
+      portingRequest: sanitizePortingRequest(populated),
+      twilioDocument: result,
+      createdPortInRequest: false,
+      uploadedDocumentType: TWILIO_PORTING_DOCUMENT_TYPE,
+    });
+  } catch (error) {
+    console.error('Twilio porting document upload error:', {
+      message: error.message,
+      status: error?.details?.status || error?.code || 'unknown',
+      requestId: req.params.id,
+      documentId: req.params.documentId,
+    });
+    const payload = buildTwilioDocumentErrorPayload(error, 'Failed to upload document to Twilio');
+    return res.status(payload.httpStatus && payload.httpStatus >= 500 ? 502 : 400).json(payload);
   }
 };
 

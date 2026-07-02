@@ -48,6 +48,7 @@ const {
   updatePortingRequest,
   updatePortingRequestStatus,
   uploadPortingDocument,
+  uploadPortingDocumentToTwilio,
 } = require('../controllers/portingRequestController');
 const { authenticate, requirePlatformAdmin } = require('../middleware/authMiddleware');
 
@@ -145,6 +146,7 @@ router.put('/porting-requests/:id', updatePortingRequest);
 router.patch('/porting-requests/:id/status', updatePortingRequestStatus);
 router.post('/porting-requests/:id/portability-check', checkPortingRequestPortability);
 router.post('/porting-requests/:id/documents', handlePortingDocumentUpload, uploadPortingDocument);
+router.post('/porting-requests/:id/documents/:documentId/twilio-upload', uploadPortingDocumentToTwilio);
 router.patch('/porting-requests/:id/archive', archivePortingRequest);
 router.post('/porting-requests/:id/activate', activatePortingNumbers);
 
