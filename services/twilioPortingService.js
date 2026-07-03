@@ -167,6 +167,30 @@ const formatDateOnly = (value) => {
   return date.toISOString().slice(0, 10);
 };
 
+const removeEmptyFields = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map(removeEmptyFields)
+      .filter((item) => item !== undefined);
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value).reduce((cleaned, [key, item]) => {
+      const nextValue = removeEmptyFields(item);
+      if (nextValue !== undefined) {
+        cleaned[key] = nextValue;
+      }
+      return cleaned;
+    }, {});
+  }
+
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+
+  return value;
+};
+
 const getUtilityBillDocumentSids = (request) => (
   Array.isArray(request?.documents)
     ? request.documents
@@ -188,7 +212,6 @@ const buildTwilioPortInPayload = (request, accountSid) => {
       account_telephone_number: normalizeTwilioText(request?.billingTelephoneNumber),
       authorized_representative: normalizeTwilioText(authorizedSigner.name),
       authorized_representative_email: normalizeTwilioText(authorizedSigner.email),
-      address_sid: null,
       address: {
         street: normalizeTwilioText(serviceAddress.street),
         street_2: normalizeTwilioText(serviceAddress.street2),
@@ -202,7 +225,7 @@ const buildTwilioPortInPayload = (request, accountSid) => {
       .filter((item) => normalizeTwilioText(item?.phoneNumber))
       .map((item) => ({
         phone_number: normalizeTwilioText(item.phoneNumber),
-        pin: normalizeTwilioText(item.pinOrPasscode || request?.pinOrPasscode) || null,
+        pin: normalizeTwilioText(item.pinOrPasscode || request?.pinOrPasscode),
       })),
     documents: getUtilityBillDocumentSids(request),
   };
@@ -220,7 +243,7 @@ const buildTwilioPortInPayload = (request, accountSid) => {
     payload.target_port_in_time_range_end = normalizeTwilioText(request.targetPortInTimeRangeEnd);
   }
 
-  return payload;
+  return removeEmptyFields(payload);
 };
 
 const normalizePortInSubmissionPayload = (payload = {}, statusCode = 200) => ({

@@ -1,4 +1,5 @@
 const path = require('path');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const ClientAccount = require('../models/ClientAccount');
 const ClientPhoneNumber = require('../models/ClientPhoneNumber');
@@ -16,6 +17,7 @@ const { syncClientAccountAssignedNumbers } = require('../utils/clientNumberOwner
 const PORTING_STATUSES = new Set(['draft', 'review', 'submitted', 'scheduled', 'porting', 'completed', 'rejected', 'cancelled']);
 const DOCUMENT_TYPES = new Set(['loa', 'bill', 'csr', 'other']);
 const MAX_TWILIO_DOCUMENT_SIZE = 10 * 1024 * 1024;
+const TWILIO_SUBMISSION_LOCK_TTL_MS = 15 * 60 * 1000;
 
 const normalizeTrimmedText = (value) => String(value || '').trim();
 
@@ -456,6 +458,61 @@ const buildTwilioSubmitErrorPayload = (error, fallbackMessage) => {
   };
 };
 
+const clearTwilioSubmissionLock = (request) => {
+  request.twilioSubmissionLockId = '';
+  request.twilioSubmissionLockedAt = null;
+  request.twilioSubmissionLockExpiresAt = null;
+  request.twilioSubmissionLockedBy = null;
+};
+
+const acquireTwilioSubmissionLock = async (requestId, user) => {
+  const now = new Date();
+  const lockId = crypto.randomUUID();
+  const lockExpiresAt = new Date(now.getTime() + TWILIO_SUBMISSION_LOCK_TTL_MS);
+
+  const request = await PortingRequest.findOneAndUpdate(
+    {
+      _id: requestId,
+      twilioPortInRequestSid: { $in: ['', null] },
+      activatedAt: null,
+      $or: [
+        { twilioSubmissionLockId: { $in: ['', null] } },
+        { twilioSubmissionLockExpiresAt: { $lte: now } },
+        { twilioSubmissionLockExpiresAt: null },
+      ],
+    },
+    {
+      $set: {
+        twilioSubmissionLockId: lockId,
+        twilioSubmissionLockedAt: now,
+        twilioSubmissionLockExpiresAt: lockExpiresAt,
+        twilioSubmissionLockedBy: user?._id || null,
+      },
+    },
+    { new: true }
+  );
+
+  return { request, lockId };
+};
+
+const releaseTwilioSubmissionLock = async (requestId, lockId) => {
+  if (!requestId || !lockId) return;
+  await PortingRequest.updateOne(
+    {
+      _id: requestId,
+      twilioSubmissionLockId: lockId,
+    },
+    {
+      $set: {
+        twilioSubmissionLockId: '',
+        twilioSubmissionLockedAt: null,
+        twilioSubmissionLockExpiresAt: null,
+        twilioSubmissionLockedBy: null,
+      },
+    }
+  );
+};
+
 const getTwilioRecentBillDocumentSids = (request) => (
   Array.isArray(request?.documents)
     ? request.documents
@@ -575,6 +632,10 @@ exports.getPortingRequestReadiness = async (req, res) => {
 };
 
 exports.submitPortingRequestToTwilio = async (req, res) => {
+  let lockedRequestId = req.params.id;
+  let lockId = '';
+  let twilioCallCompleted = false;
+
   try {
     const confirmed = req.body?.confirm === true || req.body?.confirm === 'true';
     const confirmationText = normalizeTrimmedText(req.body?.confirmationText);
@@ -585,9 +646,35 @@ exports.submitPortingRequestToTwilio = async (req, res) => {
       });
     }
 
-    const request = await PortingRequest.findById(req.params.id);
+    const { request, lockId: acquiredLockId } = await acquireTwilioSubmissionLock(req.params.id, req.user);
+    lockId = acquiredLockId;
+
     if (!request) {
-      return res.status(404).json({ error: 'Porting request not found' });
+      const existingRequest = await PortingRequest.findById(req.params.id).select(
+        '_id twilioPortInRequestSid activatedAt twilioSubmissionLockId twilioSubmissionLockExpiresAt'
+      );
+
+      if (!existingRequest) {
+        return res.status(404).json({ error: 'Porting request not found' });
+      }
+
+      if (existingRequest.twilioPortInRequestSid) {
+        const populatedExisting = await populatePortingRequest(PortingRequest.findById(existingRequest._id));
+        return res.status(409).json({
+          error: 'This porting request has already been submitted to Twilio',
+          portingRequest: sanitizePortingRequest(populatedExisting),
+        });
+      }
+
+      if (existingRequest.activatedAt) {
+        return res.status(409).json({
+          error: 'This porting request has already been activated manually and cannot be submitted to Twilio',
+        });
+      }
+
+      return res.status(409).json({
+        error: 'Twilio submission is already in progress for this request.',
+      });
     }
 
     if (request.twilioPortInRequestSid) {
@@ -606,6 +693,7 @@ exports.submitPortingRequestToTwilio = async (req, res) => {
 
     const readiness = buildPortingReadiness(request);
     if (!readiness.ready) {
+      await releaseTwilioSubmissionLock(request._id, lockId);
       return res.status(400).json({
         error: 'Porting request is not ready for Twilio submission',
         readiness,
@@ -613,25 +701,30 @@ exports.submitPortingRequestToTwilio = async (req, res) => {
     }
 
     if (hasUnsupportedPortInNumber(request)) {
+      await releaseTwilioSubmissionLock(request._id, lockId);
       return res.status(400).json({
         error: 'Toll-free or unsupported numbers cannot be submitted through this Twilio PortIn workflow',
       });
     }
 
     if (hasMissingOrNonPortableNumber(request)) {
+      await releaseTwilioSubmissionLock(request._id, lockId);
       return res.status(400).json({
         error: 'All phone numbers must have completed portability checks and be portable before submission',
       });
     }
 
     if (getTwilioRecentBillDocumentSids(request).length === 0) {
+      await releaseTwilioSubmissionLock(request._id, lockId);
       return res.status(400).json({
         error: 'A Recent Bill must be uploaded to Twilio before submission',
       });
     }
 
     const { result } = await submitPortInRequest(request);
+    twilioCallCompleted = true;
     applyTwilioPortInResultToRequest(request, result, req.user);
+    clearTwilioSubmissionLock(request);
     await request.save();
 
     const populated = await populatePortingRequest(PortingRequest.findById(request._id));
@@ -641,10 +734,22 @@ exports.submitPortingRequestToTwilio = async (req, res) => {
       activatedNumbers: false,
     });
   } catch (error) {
+    if (lockId && !twilioCallCompleted) {
+      try {
+        await releaseTwilioSubmissionLock(lockedRequestId, lockId);
+      } catch (releaseError) {
+        console.error('Failed to release Twilio submission lock:', {
+          message: releaseError.message,
+          requestId: lockedRequestId,
+        });
+      }
+    }
+
     console.error('Twilio PortIn submission error:', {
       message: error.message,
       status: error?.details?.status || error?.code || 'unknown',
       requestId: req.params.id,
+      twilioCallCompleted,
     });
     const payload = buildTwilioSubmitErrorPayload(error, 'Failed to submit porting request to Twilio');
     return res.status(payload.httpStatus && payload.httpStatus >= 500 ? 502 : 400).json(payload);

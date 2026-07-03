@@ -485,6 +485,24 @@ const portingRequestSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    twilioSubmissionLockId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioSubmissionLockedAt: {
+      type: Date,
+      default: null,
+    },
+    twilioSubmissionLockExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    twilioSubmissionLockedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     webhookEvents: {
       type: [portingWebhookEventSchema],
       default: [],
@@ -517,6 +535,7 @@ portingRequestSchema.index(
   { partialFilterExpression: { resellerId: { $type: 'objectId' } } }
 );
 portingRequestSchema.index({ archivedAt: 1 });
+portingRequestSchema.index({ twilioSubmissionLockExpiresAt: 1 });
 
 module.exports = mongoose.model('PortingRequest', portingRequestSchema);
 module.exports.PORTING_REQUEST_STATUSES = PORTING_REQUEST_STATUSES;
