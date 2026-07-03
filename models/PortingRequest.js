@@ -99,6 +99,24 @@ const portingPhoneNumberSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    twilioLastUpdatedAt: {
+      type: Date,
+      default: null,
+    },
+    portDate: {
+      type: Date,
+      default: null,
+    },
+    rejectionReason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    rejectionReasonCode: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     twilioIncomingPhoneNumberSid: {
       type: String,
       default: '',
@@ -297,6 +315,24 @@ const portingWebhookEventSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    dedupeKey: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    lastDateUpdated: {
+      type: Date,
+      default: null,
+    },
+    processed: {
+      type: Boolean,
+      default: false,
+    },
+    ignoredReason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     payload: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
@@ -412,6 +448,15 @@ const portingRequestSchema = new mongoose.Schema(
       trim: true,
     },
     twilioPortInRequestStatus: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    twilioLastUpdatedAt: {
+      type: Date,
+      default: null,
+    },
+    orderCancellationReason: {
       type: String,
       default: '',
       trim: true,

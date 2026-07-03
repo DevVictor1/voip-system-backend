@@ -18,6 +18,7 @@ const adminPortalRoutes = require('./routes/adminPortalRoutes');
 const resellerRoutes = require('./routes/resellerRoutes');
 const clientPortalRoutes = require('./routes/clientPortalRoutes');
 const resellerPortalRoutes = require('./routes/resellerPortalRoutes');
+const portingWebhookRoutes = require('./routes/portingWebhookRoutes');
 const User = require('./models/User');
 const {
   emitUserPresenceUpdate,
@@ -44,6 +45,14 @@ app.use((req, res, next) => {
   console.log("👉 Incoming Request:", req.method, req.url);
   next();
 });
+
+// Twilio PortIn webhooks need the exact raw JSON body for signature verification.
+// Keep this narrow and before express.json() so other production routes are unchanged.
+app.use(
+  '/api/twilio/porting',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  portingWebhookRoutes
+);
 
 // ✅ MIDDLEWARE
 app.use(express.json({ limit: '2mb' }));
