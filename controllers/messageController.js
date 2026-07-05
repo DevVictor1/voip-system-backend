@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const MessageThreadComment = require('../models/MessageThreadComment');
+const MessageThreadReadState = require('../models/MessageThreadReadState');
 const ConversationNote = require('../models/ConversationNote');
 const Conversation = require('../models/Conversation');
 const Team = require('../models/Team');
@@ -501,26 +502,90 @@ const syncConversationSummary = async (conversationId, type, conversationRecord 
   return conversation;
 };
 
-const buildFormattedInternalMessage = (message, userId) => ({
-  ...message.toObject(),
-  direction: buildMessageDirection(message, userId),
-});
+const buildCommentSnippet = (value = '') => {
+  const snippet = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!snippet) return '';
+  return snippet.length > 140 ? `${snippet.slice(0, 140).trim()}...` : snippet;
+};
+
+const buildFormattedInternalMessage = (message, userId, threadReadState = null) => {
+  const rawMessage = typeof message?.toObject === 'function' ? message.toObject() : { ...(message || {}) };
+  const isPersonalChatMessage = rawMessage.conversationType === 'internal_dm';
+  const latestThreadCommentAt = rawMessage.latestThreadCommentAt
+    ? new Date(rawMessage.latestThreadCommentAt)
+    : null;
+  const lastSeenCommentAt = threadReadState?.lastSeenCommentAt
+    ? new Date(threadReadState.lastSeenCommentAt)
+    : null;
+  const hasReadableThreadTimestamp = latestThreadCommentAt && !Number.isNaN(latestThreadCommentAt.getTime());
+  const hasReadableSeenTimestamp = lastSeenCommentAt && !Number.isNaN(lastSeenCommentAt.getTime());
+  const latestThreadCommentSenderId = String(rawMessage.latestThreadCommentSenderId || '').trim();
+  const hasUnreadThreadReplies = Boolean(
+    isPersonalChatMessage
+    && Number(rawMessage.commentCount || 0) > 0
+    && hasReadableThreadTimestamp
+    && latestThreadCommentSenderId
+    && latestThreadCommentSenderId !== String(userId || '').trim()
+    && (!hasReadableSeenTimestamp || latestThreadCommentAt.getTime() > lastSeenCommentAt.getTime())
+  );
+
+  return {
+    ...rawMessage,
+    direction: buildMessageDirection(message, userId),
+    hasUnreadThreadReplies,
+    latestThreadCommentSnippet: rawMessage.latestThreadCommentSnippet || '',
+  };
+};
+
+const getThreadReadStatesByMessageId = async (messages = [], userId = '') => {
+  const parentMessageIds = messages
+    .filter((message) => (
+      message?.conversationType === 'internal_dm'
+      && Number(message?.commentCount || 0) > 0
+    ))
+    .map((message) => String(message?._id || '').trim())
+    .filter(Boolean);
+
+  if (!parentMessageIds.length || !userId) {
+    return new Map();
+  }
+
+  const readStates = await MessageThreadReadState.find({
+    userId,
+    parentMessageId: { $in: parentMessageIds },
+  }).lean();
+
+  return readStates.reduce((acc, readState) => {
+    acc.set(String(readState.parentMessageId || ''), readState);
+    return acc;
+  }, new Map());
+};
 
 const buildThreadCommentPayload = (comment) => ({
   ...comment.toObject(),
 });
 
-const syncMessageCommentCount = async (messageId) => {
+const syncMessageCommentCount = async (messageId, latestComment = null) => {
   const parentMessageId = String(messageId || '').trim();
   if (!parentMessageId) return null;
 
   const nextCount = await MessageThreadComment.countDocuments({ parentMessageId });
+  const nextSet = {
+    commentCount: nextCount,
+  };
+
+  if (latestComment) {
+    nextSet.latestThreadCommentId = String(latestComment._id || '');
+    nextSet.latestThreadCommentAt = latestComment.createdAt || new Date();
+    nextSet.latestThreadCommentSenderId = String(latestComment.senderId || '');
+    nextSet.latestThreadCommentSenderName = String(latestComment.senderName || '');
+    nextSet.latestThreadCommentSnippet = buildCommentSnippet(latestComment.body);
+  }
+
   return Message.findByIdAndUpdate(
     parentMessageId,
     {
-      $set: {
-        commentCount: nextCount,
-      },
+      $set: nextSet,
     },
     {
       new: true,
@@ -2213,10 +2278,12 @@ exports.getThread = async (req, res) => {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
-    const formatted = messages.map((message) => ({
-      ...message.toObject(),
-      direction: buildMessageDirection(message, userId),
-    }));
+    const threadReadStatesByMessageId = await getThreadReadStatesByMessageId(messages, userId);
+    const formatted = messages.map((message) => buildFormattedInternalMessage(
+      message,
+      userId,
+      threadReadStatesByMessageId.get(String(message?._id || '')) || null
+    ));
 
     res.json(formatted);
   } catch (error) {
@@ -2983,16 +3050,81 @@ exports.getMessageThreadComments = async (req, res) => {
     }).sort({ createdAt: 1 });
 
     const syncedMessage = await syncMessageCommentCount(message._id) || message;
-    const rootMessage = buildFormattedInternalMessage(syncedMessage, userId);
+    const readState = message.conversationType === 'internal_dm'
+      ? await MessageThreadReadState.findOne({
+          parentMessageId: String(message._id || ''),
+          userId,
+        }).lean()
+      : null;
+    const rootMessage = buildFormattedInternalMessage(syncedMessage, userId, readState);
 
     return res.json({
       rootMessage,
       commentCount: Number(rootMessage.commentCount || comments.length || 0),
+      readState,
       comments: comments.map((comment) => buildThreadCommentPayload(comment)),
     });
   } catch (error) {
     console.error('❌ Message thread fetch error:', error);
     return res.status(500).json({ error: 'Failed to fetch threaded comments' });
+  }
+};
+
+exports.markMessageThreadCommentsRead = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const access = await resolveInternalMessageAccess({
+      messageId,
+      rawUserId: req.body?.userId || req.query?.userId,
+      rawRole: req.body?.role || req.query?.role,
+    });
+
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { message, userId } = access;
+
+    if (message.conversationType !== 'internal_dm') {
+      return res.status(400).json({ error: 'Thread read state is available for personal chats only' });
+    }
+
+    const latestComment = await MessageThreadComment.findOne({
+      parentMessageId: String(message._id || ''),
+    }).sort({ createdAt: -1 });
+
+    const readState = await MessageThreadReadState.findOneAndUpdate(
+      {
+        parentMessageId: String(message._id || ''),
+        userId,
+      },
+      {
+        $set: {
+          clientAccountId: message.clientAccountId || null,
+          parentMessageId: String(message._id || ''),
+          conversationId: message.conversationId,
+          conversationType: message.conversationType,
+          userId,
+          lastSeenCommentId: latestComment ? String(latestComment._id || '') : '',
+          lastSeenCommentAt: latestComment?.createdAt || null,
+          lastOpenedAt: new Date(),
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    return res.json({
+      success: true,
+      readState,
+      rootMessage: buildFormattedInternalMessage(message, userId, readState),
+    });
+  } catch (error) {
+    console.error('❌ Message thread read state error:', error);
+    return res.status(500).json({ error: 'Failed to mark threaded comments read' });
   }
 };
 
@@ -3041,7 +3173,7 @@ exports.createMessageThreadComment = async (req, res) => {
       body,
     });
 
-    const updatedParentMessage = await syncMessageCommentCount(message._id);
+    const updatedParentMessage = await syncMessageCommentCount(message._id, savedComment);
     const formattedParentMessage = updatedParentMessage
       ? buildFormattedInternalMessage(updatedParentMessage, userId)
       : buildFormattedInternalMessage(message, userId);

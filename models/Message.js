@@ -189,6 +189,27 @@ const messageSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    latestThreadCommentId: {
+      type: String,
+      default: '',
+    },
+    latestThreadCommentAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    latestThreadCommentSenderId: {
+      type: String,
+      default: '',
+    },
+    latestThreadCommentSenderName: {
+      type: String,
+      default: '',
+    },
+    latestThreadCommentSnippet: {
+      type: String,
+      default: '',
+    },
     forwardedFromMessageId: {
       type: String,
       default: null,

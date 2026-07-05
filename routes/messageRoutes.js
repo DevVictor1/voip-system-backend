@@ -29,13 +29,14 @@ const {
    softDeleteMessage,
    togglePinMessage,
    toggleMessageReaction,
-   getConversationNotes,
-   createConversationNote,
-   updateConversationNote,
-   deleteConversationNote,
-   getMessageThreadComments,
-   createMessageThreadComment,
-   } = require('../controllers/messageController');
+    getConversationNotes,
+    createConversationNote,
+    updateConversationNote,
+    deleteConversationNote,
+    getMessageThreadComments,
+    markMessageThreadCommentsRead,
+    createMessageThreadComment,
+    } = require('../controllers/messageController');
 
 const router = express.Router();
 const INTERNAL_ATTACHMENT_DIR = path.join(process.cwd(), 'uploads', 'internal-chat');
@@ -122,6 +123,7 @@ router.post('/conversation/:conversationId/notes', createConversationNote);
 router.put('/conversation/:conversationId/notes/:noteId', updateConversationNote);
 router.delete('/conversation/:conversationId/notes/:noteId', deleteConversationNote);
 router.get('/message/:messageId/comments', getMessageThreadComments);
+router.put('/message/:messageId/comments/read', markMessageThreadCommentsRead);
 router.post('/message/:messageId/comments', createMessageThreadComment);
 
 module.exports = router;
