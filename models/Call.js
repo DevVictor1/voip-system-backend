@@ -68,5 +68,6 @@ callSchema.index(
   { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 callSchema.index({ createdAt: -1 });
+callSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Call', callSchema);

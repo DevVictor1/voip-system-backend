@@ -11,39 +11,57 @@ exports.getStats = async (req, res) => {
   try {
     const startOfDay = getStartOfDay();
 
-    const activeConversationsAgg = await Message.aggregate([
-      {
-        $project: {
-          key: {
-            $cond: [
-              { $eq: ['$direction', 'outbound'] },
-              '$to',
-              '$from'
-            ]
+    const [
+      activeConversationsAgg,
+      callDurationAgg,
+      smsDelivered,
+      missedCalls,
+    ] = await Promise.all([
+      Message.aggregate([
+        {
+          $project: {
+            key: {
+              $cond: [
+                { $eq: ['$direction', 'outbound'] },
+                '$to',
+                '$from'
+              ]
+            }
+          }
+        },
+        { $group: { _id: '$key' } },
+        { $count: 'count' }
+      ]),
+      Call.aggregate([
+        { $match: { createdAt: { $gte: startOfDay } } },
+        {
+          $group: {
+            _id: null,
+            totalSeconds: {
+              $sum: {
+                $convert: {
+                  input: '$duration',
+                  to: 'double',
+                  onError: 0,
+                  onNull: 0
+                }
+              }
+            }
           }
         }
-      },
-      { $group: { _id: '$key' } },
-      { $count: 'count' }
+      ]),
+      Message.countDocuments({
+        direction: 'outbound',
+        status: { $in: ['delivered', 'sent'] }
+      }),
+      Call.countDocuments({
+        status: { $in: ['missed', 'no-answer', 'no_answer', 'noanswer', 'busy', 'failed'] }
+      })
     ]);
 
     const activeConversations = activeConversationsAgg[0]?.count || 0;
-
-    const callsToday = await Call.find({ createdAt: { $gte: startOfDay } });
-    const totalSeconds = callsToday.reduce((sum, call) => {
-      const seconds = Number(call.duration);
-      return Number.isFinite(seconds) ? sum + seconds : sum;
-    }, 0);
+    const totalSeconds = Number(callDurationAgg[0]?.totalSeconds) || 0;
     const dailyCallMinutes = Math.round((totalSeconds / 60) * 10) / 10;
-
-    const smsDelivered = await Message.countDocuments({
-      direction: 'outbound',
-      status: { $in: ['delivered', 'sent'] }
-    });
-
-    const missedCalls = await Call.countDocuments({
-      status: { $in: ['missed', 'no-answer', 'no_answer', 'noanswer', 'busy', 'failed'] }
-    });
 
     res.json({
       activeConversations,
