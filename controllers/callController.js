@@ -14,8 +14,18 @@ const FINAL_CALL_STATUSES = ['completed', 'canceled', 'failed', 'busy', 'no-answ
 const RETRYABLE_DIAL_STATUSES = ['busy', 'failed', 'no-answer', 'canceled'];
 const DEFAULT_DIAL_TIMEOUT_SECONDS = 20;
 const AGENT_CALL_BLOCKED_AVAILABILITY_STATUSES = new Set(['offline', 'busy', 'meeting', 'break']);
+const DEFAULT_CALL_LOG_LIMIT = 50;
+const MAX_CALL_LOG_LIMIT = 100;
 
 const normalizeLang = (lang) => (lang === 'vi' ? 'vi' : 'en');
+const normalizePositiveInteger = (value, fallback, max = Number.MAX_SAFE_INTEGER) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
+};
 const normalizeAvailabilityStatus = (status) => {
   const normalized = String(status || '').trim().toLowerCase();
   if (['online', 'busy', 'meeting', 'break', 'offline'].includes(normalized)) {
@@ -1355,8 +1365,32 @@ exports.clearCalls = async (req, res) => {
 // ==========================
 exports.getCalls = async (req, res) => {
   try {
-    const calls = await Call.find().sort({ createdAt: -1 });
-    res.json(calls);
+    const page = normalizePositiveInteger(req.query?.page, 1);
+    const limit = normalizePositiveInteger(req.query?.limit, DEFAULT_CALL_LOG_LIMIT, MAX_CALL_LOG_LIMIT);
+    const skip = (page - 1) * limit;
+    const query = {};
+
+    const [calls, total] = await Promise.all([
+      Call.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Call.countDocuments(query),
+    ]);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    res.json({
+      calls,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch calls' });
   }
