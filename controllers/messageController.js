@@ -43,6 +43,8 @@ const LINK_PREVIEW_META_PATTERN = /<meta\s+[^>]*?(?:property|name)\s*=\s*["']([^
 const LINK_PREVIEW_TITLE_PATTERN = /<title[^>]*>([^<]*)<\/title>/i;
 const LINK_PREVIEW_TIMEOUT_MS = 1200;
 const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
+const DEFAULT_INTERNAL_THREAD_PAGE_SIZE = 50;
+const MAX_INTERNAL_THREAD_PAGE_SIZE = 100;
 
 const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
@@ -2207,11 +2209,44 @@ exports.getConversations = async (req, res) => {
   }
 };
 
+function normalizeInternalThreadLimit(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_INTERNAL_THREAD_PAGE_SIZE;
+  return Math.min(parsed, MAX_INTERNAL_THREAD_PAGE_SIZE);
+}
+
+function buildInternalThreadCursorQuery({ beforeCreatedAt, beforeId }) {
+  const cursorDate = beforeCreatedAt ? new Date(beforeCreatedAt) : null;
+  if (!cursorDate || Number.isNaN(cursorDate.getTime())) return {};
+
+  const cursorClauses = [{ createdAt: { $lt: cursorDate } }];
+
+  if (beforeId && mongoose.Types.ObjectId.isValid(beforeId)) {
+    cursorClauses.push({
+      createdAt: cursorDate,
+      _id: { $lt: new mongoose.Types.ObjectId(beforeId) },
+    });
+  }
+
+  return { $or: cursorClauses };
+}
+
+function buildMessageCursor(message) {
+  if (!message?._id || !message?.createdAt) return null;
+
+  return {
+    createdAt: message.createdAt,
+    id: String(message._id),
+  };
+}
+
 exports.getThread = async (req, res) => {
   try {
     const actor = await getVerifiedInternalActor(req.query.userId);
     const { userId, role } = actor;
     const { conversationId } = req.params;
+    const shouldPaginate = req.query.paginated === 'true' && String(conversationId || '').startsWith('dm:');
+    const pageLimit = normalizeInternalThreadLimit(req.query.limit);
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
@@ -2223,19 +2258,38 @@ exports.getThread = async (req, res) => {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    const messages = await Message.find({
+    const baseMessageQuery = {
       conversationId,
       conversationType: { $in: INTERNAL_TYPES },
-    }).sort({ createdAt: 1 });
+    };
+    const cursorQuery = shouldPaginate
+      ? buildInternalThreadCursorQuery({
+          beforeCreatedAt: req.query.beforeCreatedAt,
+          beforeId: req.query.beforeId,
+        })
+      : {};
+    const messageQuery = Object.keys(cursorQuery).length > 0
+      ? { $and: [baseMessageQuery, cursorQuery] }
+      : baseMessageQuery;
+
+    const messages = shouldPaginate
+      ? (await Message.find(messageQuery)
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(pageLimit + 1)
+        .lean())
+        .reverse()
+      : await Message.find(messageQuery).sort({ createdAt: 1 });
+    const hasMoreBefore = shouldPaginate && messages.length > pageLimit;
+    const pageMessages = shouldPaginate && hasMoreBefore ? messages.slice(1) : messages;
 
     const dmConversation = conversationId.startsWith('dm:')
       ? await ensureDmConversationRecord({
           conversationId,
-          participants: messages[0]?.participants?.length
-            ? messages[0].participants
+          participants: pageMessages[0]?.participants?.length
+            ? pageMessages[0].participants
             : parseLegacyDmConversationId(conversationId),
           currentUserId: userId,
-          createdBy: messages[0]?.senderId || userId,
+          createdBy: pageMessages[0]?.senderId || userId,
         })
       : null;
     const syncedDmConversation = dmConversation
@@ -2245,9 +2299,9 @@ exports.getThread = async (req, res) => {
     const teamRecord = !dmConversation
       ? await findTeamByConversationId(conversationId)
         || await ensureTeamRecord({
-          teamId: messages[0]?.teamId || conversationId,
-          teamName: messages[0]?.teamName,
-          participants: messages[0]?.participants || [],
+          teamId: pageMessages[0]?.teamId || conversationId,
+          teamName: pageMessages[0]?.teamName,
+          participants: pageMessages[0]?.participants || [],
         })
       : null;
     const teamConversation = teamRecord
@@ -2267,10 +2321,10 @@ exports.getThread = async (req, res) => {
           conversationType: 'team',
           participants: syncedTeamConversation.participants || [],
         }
-      : messages[0]
+      : pageMessages[0]
       ? {
-          conversationType: messages[0].conversationType,
-          participants: messages[0].participants || [],
+          conversationType: pageMessages[0].conversationType,
+          participants: pageMessages[0].participants || [],
         }
       : seeded;
 
@@ -2278,12 +2332,24 @@ exports.getThread = async (req, res) => {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
-    const threadReadStatesByMessageId = await getThreadReadStatesByMessageId(messages, userId);
-    const formatted = messages.map((message) => buildFormattedInternalMessage(
+    const threadReadStatesByMessageId = await getThreadReadStatesByMessageId(pageMessages, userId);
+    const formatted = pageMessages.map((message) => buildFormattedInternalMessage(
       message,
       userId,
       threadReadStatesByMessageId.get(String(message?._id || '')) || null
     ));
+
+    if (shouldPaginate) {
+      return res.json({
+        messages: formatted,
+        pagination: {
+          limit: pageLimit,
+          hasMoreBefore,
+          oldestCursor: buildMessageCursor(pageMessages[0]),
+          newestCursor: buildMessageCursor(pageMessages[pageMessages.length - 1]),
+        },
+      });
+    }
 
     res.json(formatted);
   } catch (error) {
