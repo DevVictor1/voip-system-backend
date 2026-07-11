@@ -18,18 +18,18 @@ exports.getStats = async (req, res) => {
       missedCalls,
     ] = await Promise.all([
       Message.aggregate([
+        { $match: { direction: 'outbound' } },
+        { $group: { _id: '$to' } },
         {
-          $project: {
-            key: {
-              $cond: [
-                { $eq: ['$direction', 'outbound'] },
-                '$to',
-                '$from'
-              ]
-            }
+          $unionWith: {
+            coll: Message.collection.name,
+            pipeline: [
+              { $match: { direction: { $ne: 'outbound' } } },
+              { $group: { _id: '$from' } }
+            ]
           }
         },
-        { $group: { _id: '$key' } },
+        { $group: { _id: '$_id' } },
         { $count: 'count' }
       ]),
       Call.aggregate([
