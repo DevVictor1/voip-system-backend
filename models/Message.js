@@ -263,6 +263,7 @@ messageSchema.index(
   { clientAccountId: 1, conversationId: 1, createdAt: -1 },
   { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
+messageSchema.index({ conversationType: 1, conversationId: 1, createdAt: -1, _id: -1 });
 messageSchema.index({ direction: 1, status: 1 });
 messageSchema.index({ direction: 1, to: 1, from: 1 });
 
