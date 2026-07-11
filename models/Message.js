@@ -264,5 +264,6 @@ messageSchema.index(
   { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
 messageSchema.index({ direction: 1, status: 1 });
+messageSchema.index({ direction: 1, to: 1, from: 1 });
 
 module.exports = mongoose.model('Message', messageSchema);
