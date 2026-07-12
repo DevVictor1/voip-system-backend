@@ -26,6 +26,7 @@ const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '�
 
 const INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX = '/uploads/internal-chat/';
 const INTERNAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const MAX_INTERNAL_ATTACHMENT_FILES = 10;
 const ALLOWED_INTERNAL_ATTACHMENT_TYPES = new Set([
   'application/pdf',
   'application/msword',
@@ -788,6 +789,60 @@ const normalizeInternalAttachment = (attachment = null) => {
   };
 };
 
+const getInternalAttachmentKind = (fileType = '', fileName = '') => {
+  const normalizedType = String(fileType || '').toLowerCase();
+  if (normalizedType.startsWith('image/')) return 'image';
+  return 'document';
+};
+
+const normalizeInternalAttachments = (attachments = []) => {
+  if (!Array.isArray(attachments)) return [];
+
+  const normalized = [];
+  const seen = new Set();
+
+  attachments.slice(0, MAX_INTERNAL_ATTACHMENT_FILES).forEach((item) => {
+    const attachment = normalizeInternalAttachment(item);
+    if (!attachment) return;
+
+    const key = [
+      attachment.storagePath,
+      attachment.fileName,
+      attachment.fileSize,
+    ].join('|');
+
+    if (seen.has(key)) return;
+    seen.add(key);
+    normalized.push(attachment);
+  });
+
+  return normalized;
+};
+
+const buildInternalAttachmentPayload = (req, file) => {
+  const fileType = String(file.mimetype || '').trim().toLowerCase();
+  const fileName = String(file.originalname || file.filename || '').trim();
+
+  return {
+    fileName,
+    fileType,
+    fileSize: file.size,
+    fileUrl: buildInternalAttachmentUrl(req, file.filename),
+    storagePath: path.posix.join('internal-chat', file.filename),
+    kind: getInternalAttachmentKind(fileType, fileName),
+  };
+};
+
+const cleanupInternalUploadedFiles = async (files = []) => {
+  await Promise.all(
+    files.map((file) => (
+      file?.path
+        ? fs.promises.unlink(file.path).catch(() => {})
+        : Promise.resolve()
+    ))
+  );
+};
+
 const buildMessagePreview = (message) => {
   if (!message) return '';
   if (message.isDeleted) return 'This message was deleted';
@@ -795,7 +850,9 @@ const buildMessagePreview = (message) => {
   const body = String(message.body || '').trim();
   if (body) return body;
 
-  const attachmentName = String(message.attachment?.fileName || '').trim();
+  const attachmentName = String(
+    message.attachment?.fileName || message.attachments?.[0]?.fileName || ''
+  ).trim();
   return attachmentName ? `Attachment: ${attachmentName}` : '';
 };
 
@@ -2373,21 +2430,53 @@ exports.uploadInternalAttachment = async (req, res) => {
       return res.status(400).json({ error: 'File is too large' });
     }
 
-    const fileName = String(req.file.originalname || req.file.filename || '').trim();
-    const fileUrl = buildInternalAttachmentUrl(req, req.file.filename);
-
     return res.json({
-      attachment: {
-        fileName,
-        fileType,
-        fileSize: req.file.size,
-        fileUrl,
-        storagePath: path.posix.join('internal-chat', req.file.filename),
-      },
+      attachment: buildInternalAttachmentPayload(req, req.file),
     });
   } catch (error) {
     console.error('Internal attachment upload error:', error);
+    await cleanupInternalUploadedFiles(req.file ? [req.file] : []);
     return res.status(500).json({ error: 'Upload failed' });
+  }
+};
+
+exports.uploadInternalAttachments = async (req, res) => {
+  const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+
+  try {
+    if (!req.user) {
+      await cleanupInternalUploadedFiles(uploadedFiles);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    if (uploadedFiles.length > MAX_INTERNAL_ATTACHMENT_FILES) {
+      await cleanupInternalUploadedFiles(uploadedFiles);
+      return res.status(400).json({ error: `You can upload up to ${MAX_INTERNAL_ATTACHMENT_FILES} files at once` });
+    }
+
+    const attachments = uploadedFiles.map((file) => {
+      const fileType = String(file.mimetype || '').trim().toLowerCase();
+
+      if (!ALLOWED_INTERNAL_ATTACHMENT_TYPES.has(fileType)) {
+        throw new Error('Unsupported file type');
+      }
+
+      if (!Number.isFinite(file.size) || file.size <= 0 || file.size > INTERNAL_ATTACHMENT_MAX_BYTES) {
+        throw new Error('Each file must be 10 MB or smaller');
+      }
+
+      return buildInternalAttachmentPayload(req, file);
+    });
+
+    return res.json({ attachments });
+  } catch (error) {
+    console.error('Internal attachments upload error:', error);
+    await cleanupInternalUploadedFiles(uploadedFiles);
+    return res.status(400).json({ error: error?.message || 'Upload failed' });
   }
 };
 
@@ -2409,9 +2498,14 @@ exports.downloadInternalAttachment = async (req, res) => {
     }
 
     const { message } = access;
-    const attachment = message?.attachment && typeof message.attachment === 'object'
+    const requestedIndex = Number.parseInt(req.params.attachmentIndex, 10);
+    const normalizedAttachments = normalizeInternalAttachments(message?.attachments || []);
+    const legacyAttachment = message?.attachment && typeof message.attachment === 'object'
       ? message.attachment
       : null;
+    const attachment = Number.isInteger(requestedIndex)
+      ? normalizedAttachments[requestedIndex] || (requestedIndex === 0 ? legacyAttachment : null)
+      : (legacyAttachment || normalizedAttachments[0] || null);
 
     if (!attachment?.storagePath || !attachment?.fileName || !attachment?.fileType) {
       return res.status(404).json({ error: 'Attachment not found' });
@@ -2455,6 +2549,7 @@ exports.sendMessage = async (req, res) => {
       conversationId,
       userId: rawUserId,
       attachment: rawAttachment,
+      attachments: rawAttachments,
       forwardedFromMessageId,
       replyTo: rawReplyTo,
     } = req.body || {};
@@ -2466,12 +2561,28 @@ exports.sendMessage = async (req, res) => {
     const trimmedBody = normalizedBody.trim();
     const hasBodyContent = trimmedBody.length > 0;
     const attachment = normalizeInternalAttachment(rawAttachment);
+    const hasRawAttachments = Array.isArray(rawAttachments);
+    if (hasRawAttachments && rawAttachments.length > MAX_INTERNAL_ATTACHMENT_FILES) {
+      return res.status(400).json({ error: `You can send up to ${MAX_INTERNAL_ATTACHMENT_FILES} attachments at once` });
+    }
+
+    const attachments = hasRawAttachments
+      ? rawAttachments.map((item) => normalizeInternalAttachment(item))
+      : [];
+
+    if (hasRawAttachments && attachments.some((item) => !item)) {
+      return res.status(400).json({ error: 'Invalid attachment' });
+    }
+
+    const normalizedAttachments = normalizeInternalAttachments(attachments);
+    const primaryAttachment = normalizedAttachments[0] || attachment || null;
+    const hasAttachments = Boolean(primaryAttachment || normalizedAttachments.length > 0);
 
     if (!userId) {
       return res.status(400).json({ error: 'Invalid userId' });
     }
 
-    if (!conversationId || (!hasBodyContent && !attachment) || !INTERNAL_TYPES.includes(conversationType)) {
+    if (!conversationId || (!hasBodyContent && !hasAttachments) || !INTERNAL_TYPES.includes(conversationType)) {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
@@ -2486,7 +2597,7 @@ exports.sendMessage = async (req, res) => {
     const sanitizedReplyTo = replyTo?.messageId
       ? replyTo
       : null;
-    const linkPreview = attachment ? null : await fetchLinkPreviewMetadata(normalizedBody);
+    const linkPreview = hasAttachments ? null : await fetchLinkPreviewMetadata(normalizedBody);
     let payload;
 
     if (conversationType === 'internal_dm') {
@@ -2508,7 +2619,8 @@ exports.sendMessage = async (req, res) => {
         from: userId,
         to: recipientId,
         body: normalizedBody,
-        attachment,
+        attachment: primaryAttachment,
+        attachments: normalizedAttachments,
         direction: 'outbound',
         conversationType,
         conversationId: conversation?.conversationId || conversationId,
@@ -2548,7 +2660,8 @@ exports.sendMessage = async (req, res) => {
         from: userId,
         to: team.slug,
         body: normalizedBody,
-        attachment,
+        attachment: primaryAttachment,
+        attachments: normalizedAttachments,
         direction: 'outbound',
         conversationType,
         conversationId: teamConversation?.conversationId || team.slug,

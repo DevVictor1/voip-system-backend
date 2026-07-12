@@ -1,5 +1,31 @@
 ﻿const mongoose = require('mongoose');
 
+const attachmentSchema = new mongoose.Schema(
+  {
+    fileName: {
+      type: String,
+      default: '',
+    },
+    fileType: {
+      type: String,
+      default: '',
+    },
+    fileSize: {
+      type: Number,
+      default: 0,
+    },
+    fileUrl: {
+      type: String,
+      default: '',
+    },
+    storagePath: {
+      type: String,
+      default: '',
+    },
+  },
+  { _id: false }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     clientAccountId: {
@@ -71,32 +97,12 @@ const messageSchema = new mongoose.Schema(
       default: [],
     },
     attachment: {
-      type: new mongoose.Schema(
-        {
-          fileName: {
-            type: String,
-            default: '',
-          },
-          fileType: {
-            type: String,
-            default: '',
-          },
-          fileSize: {
-            type: Number,
-            default: 0,
-          },
-          fileUrl: {
-            type: String,
-            default: '',
-          },
-          storagePath: {
-            type: String,
-            default: '',
-          },
-        },
-        { _id: false }
-      ),
+      type: attachmentSchema,
       default: null,
+    },
+    attachments: {
+      type: [attachmentSchema],
+      default: [],
     },
     linkPreview: {
       type: new mongoose.Schema(
