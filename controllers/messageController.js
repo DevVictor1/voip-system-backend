@@ -719,9 +719,9 @@ const buildMentionNotificationPreview = (value = '') => {
   return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
 };
 
-const buildInternalAttachmentUrl = (req, fileName) => {
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
-  return `${baseUrl}${INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX}${fileName}`;
+const buildInternalAttachmentUrl = (fileName) => {
+  const safeFileName = encodeURIComponent(String(fileName || '').replace(/[\\/]/g, ''));
+  return `${INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX}${safeFileName}`;
 };
 
 const INTERNAL_ATTACHMENT_ROOT_DIR = path.resolve(process.cwd(), 'uploads', 'internal-chat');
@@ -819,7 +819,7 @@ const normalizeInternalAttachments = (attachments = []) => {
   return normalized;
 };
 
-const buildInternalAttachmentPayload = (req, file) => {
+const buildInternalAttachmentPayload = (file) => {
   const fileType = String(file.mimetype || '').trim().toLowerCase();
   const fileName = String(file.originalname || file.filename || '').trim();
 
@@ -827,7 +827,7 @@ const buildInternalAttachmentPayload = (req, file) => {
     fileName,
     fileType,
     fileSize: file.size,
-    fileUrl: buildInternalAttachmentUrl(req, file.filename),
+    fileUrl: buildInternalAttachmentUrl(file.filename),
     storagePath: path.posix.join('internal-chat', file.filename),
     kind: getInternalAttachmentKind(fileType, fileName),
   };
@@ -2431,7 +2431,7 @@ exports.uploadInternalAttachment = async (req, res) => {
     }
 
     return res.json({
-      attachment: buildInternalAttachmentPayload(req, req.file),
+      attachment: buildInternalAttachmentPayload(req.file),
     });
   } catch (error) {
     console.error('Internal attachment upload error:', error);
@@ -2469,7 +2469,7 @@ exports.uploadInternalAttachments = async (req, res) => {
         throw new Error('Each file must be 10 MB or smaller');
       }
 
-      return buildInternalAttachmentPayload(req, file);
+      return buildInternalAttachmentPayload(file);
     });
 
     return res.json({ attachments });
