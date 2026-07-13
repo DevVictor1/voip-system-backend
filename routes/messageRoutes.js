@@ -22,6 +22,7 @@ const {
   getConversations,
    getThread,
    uploadInternalAttachment,
+   uploadInternalAttachments,
    downloadInternalAttachment,
    sendMessage,
    markConversationRead,
@@ -52,6 +53,34 @@ const ALLOWED_INTERNAL_ATTACHMENT_TYPES = new Set([
   'text/plain',
   'text/csv',
 ]);
+const ALLOWED_INTERNAL_ATTACHMENT_EXTENSIONS = new Set([
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.xls',
+  '.xlsx',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.txt',
+  '.csv',
+]);
+const MAX_INTERNAL_ATTACHMENT_FILES = 10;
+
+const cleanupUploadedFiles = (files = []) => {
+  files.forEach((file) => {
+    if (!file?.path) return;
+    fs.promises.unlink(file.path).catch(() => {});
+  });
+};
+
+const isAllowedInternalAttachment = (file) => {
+  const mimetype = String(file?.mimetype || '').trim().toLowerCase();
+  const extension = path.extname(file?.originalname || '').toLowerCase();
+  return ALLOWED_INTERNAL_ATTACHMENT_TYPES.has(mimetype)
+    && ALLOWED_INTERNAL_ATTACHMENT_EXTENSIONS.has(extension);
+};
 
 const internalAttachmentUpload = multer({
   storage: multer.diskStorage({
@@ -69,7 +98,7 @@ const internalAttachmentUpload = multer({
     fileSize: 10 * 1024 * 1024,
   },
   fileFilter: (_req, file, callback) => {
-    if (!ALLOWED_INTERNAL_ATTACHMENT_TYPES.has(String(file.mimetype || '').trim().toLowerCase())) {
+    if (!isAllowedInternalAttachment(file)) {
       callback(new Error('Unsupported file type'));
       return;
     }
@@ -94,6 +123,36 @@ const handleInternalAttachmentUpload = (req, res, next) => {
   });
 };
 
+const handleInternalAttachmentsUpload = (req, res, next) => {
+  internalAttachmentUpload.array('files', MAX_INTERNAL_ATTACHMENT_FILES)(req, res, (error) => {
+    if (!error) {
+      if (!Array.isArray(req.files) || req.files.length === 0) {
+        res.status(400).json({ error: 'No files uploaded' });
+        return;
+      }
+
+      next();
+      return;
+    }
+
+    cleanupUploadedFiles(req.files);
+
+    if (error instanceof multer.MulterError) {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        res.status(400).json({ error: 'Each file must be 10 MB or smaller' });
+        return;
+      }
+
+      if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+        res.status(400).json({ error: `You can upload up to ${MAX_INTERNAL_ATTACHMENT_FILES} files at once` });
+        return;
+      }
+    }
+
+    res.status(400).json({ error: error.message || 'Upload failed' });
+  });
+};
+
 router.get('/teams', getTeams);
 router.get('/conversation/:conversationId', getConversationRecord);
 router.post('/direct/start', startDirectConversation);
@@ -111,7 +170,9 @@ router.delete('/team/:conversationId', deleteTeamConversation);
 router.get('/conversations', getConversations);
 router.get('/thread/:conversationId', getThread);
 router.post('/upload', authenticate, handleInternalAttachmentUpload, uploadInternalAttachment);
+router.post('/uploads', authenticate, handleInternalAttachmentsUpload, uploadInternalAttachments);
 router.get('/message/:messageId/attachment', authenticate, downloadInternalAttachment);
+router.get('/message/:messageId/attachment/:attachmentIndex', authenticate, downloadInternalAttachment);
 router.post('/send', sendMessage);
 router.put('/read/:conversationId', markConversationRead);
 router.put('/message/:messageId', editMessage);
