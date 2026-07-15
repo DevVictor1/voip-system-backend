@@ -395,23 +395,41 @@ const buildTeamMemberDirectory = async () => {
   }, {});
 };
 
-const buildTeamDetailsPayload = async (team, currentUserId, role) => {
+const resolveTeamManagementAccess = async (team, currentUserId, role) => {
   const members = await resolveTeamMembers(team);
-  const userDirectory = await buildTeamMemberDirectory();
-  const canAccess = members.includes(currentUserId);
-
-  if (!canAccess) {
-    return null;
-  }
-
+  const normalizedUserId = normalizeUserIdValue(currentUserId);
+  const creatorId = normalizeUserIdValue(team?.createdBy);
+  const isMember = Boolean(normalizedUserId && members.includes(normalizedUserId));
+  const isOwner = Boolean(normalizedUserId && creatorId && creatorId === normalizedUserId);
   const manageable = !isSystemManagedTeam(team);
-  const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team)
-    && (role === 'admin' || members.includes(currentUserId));
-  const canManageTeam = manageable && (
-    role === 'admin'
-    || team.createdBy === currentUserId
+  const isMemberAdmin = role === 'admin' && isMember;
+  const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team) && isMemberAdmin;
+  const canManage = manageable && isMember && (
+    isOwner
+    || isMemberAdmin
     || canManageLegacyCustomTeam
   );
+
+  return {
+    members,
+    creatorId,
+    isMember,
+    isOwner,
+    isMemberAdmin,
+    manageable,
+    canManageLegacyCustomTeam,
+    canManage,
+  };
+};
+
+const buildTeamDetailsPayload = async (team, currentUserId, role) => {
+  const access = await resolveTeamManagementAccess(team, currentUserId, role);
+  const { members } = access;
+  const userDirectory = await buildTeamMemberDirectory();
+
+  if (!access.isMember) {
+    return null;
+  }
 
   return {
     conversationId: team.slug || team.id,
@@ -420,14 +438,15 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     memberCount: members.length,
     createdBy: team.createdBy || '',
     department: normalizeDepartment(team.department) || '',
-    isSystemManaged: !manageable,
-    canManage: canManageTeam,
-    canLeave: manageable && members.includes(currentUserId),
-    canDelete: canManageTeam,
-    managementNote: manageable
+    isSystemManaged: !access.manageable,
+    isOwner: access.isOwner,
+    canManage: access.canManage,
+    canLeave: access.manageable && access.isMember && !access.isOwner,
+    canDelete: access.canManage,
+    managementNote: access.manageable
       ? (
         isLegacyCustomSystemTeam(team)
-          ? 'This group was created before ownership tracking was added. It is treated as a custom group for current members.'
+          ? 'This group was created before ownership tracking was added. Current member admins can manage it.'
           : ''
       )
       : 'This team is managed by workspace defaults and can only be viewed here.',
@@ -1549,13 +1568,13 @@ exports.startDirectConversation = async (req, res) => {
 
 exports.createTeamConversation = async (req, res) => {
   try {
-    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const actor = getAuthenticatedInternalActor(req);
     const { userId, role } = actor;
     const teamName = String(req.body?.teamName || '').trim();
     const participantIds = Array.isArray(req.body?.participantIds) ? req.body.participantIds : [];
 
     if (!userId) {
-      return res.status(400).json({ error: 'Invalid userId' });
+      return res.status(403).json({ error: 'Not allowed' });
     }
 
     if (!teamName) {
@@ -1606,11 +1625,11 @@ exports.createTeamConversation = async (req, res) => {
 exports.deleteTeamConversation = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const actor = await getVerifiedInternalActor(req.body?.userId || req.query?.userId);
+    const actor = getAuthenticatedInternalActor(req);
     const { userId, role } = actor;
 
     if (!userId) {
-      return res.status(400).json({ error: 'Invalid userId' });
+      return res.status(403).json({ error: 'Not allowed' });
     }
 
     const team = await getTeamDocumentByConversationId(conversationId);
@@ -1623,13 +1642,14 @@ exports.deleteTeamConversation = async (req, res) => {
       return res.status(400).json({ error: 'This team is managed by workspace defaults' });
     }
 
-    const currentMembers = await resolveTeamMembers(team);
-    const canDelete = role === 'admin'
-      || team.createdBy === userId
-      || (isLegacyCustomSystemTeam(team) && currentMembers.includes(userId));
+    const access = await resolveTeamManagementAccess(team, userId, role);
 
-    if (!canDelete) {
-      return res.status(403).json({ error: 'Only the group creator or an admin can delete this group' });
+    if (!access.isMember) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    if (!access.canManage) {
+      return res.status(403).json({ error: 'Only the group creator or a member admin can delete this group' });
     }
 
     team.members = [];
@@ -2000,13 +2020,13 @@ exports.toggleTeamCalendarEventPin = async (req, res) => {
 exports.updateTeamDetails = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const actor = await getVerifiedInternalActor(req.body?.userId);
+    const actor = getAuthenticatedInternalActor(req);
     const { userId, role } = actor;
     const nextName = String(req.body?.teamName || '').trim();
     const requestedMemberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : null;
 
     if (!userId) {
-      return res.status(400).json({ error: 'Invalid userId' });
+      return res.status(403).json({ error: 'Not allowed' });
     }
 
     const team = await getTeamDocumentByConversationId(conversationId);
@@ -2015,10 +2035,9 @@ exports.updateTeamDetails = async (req, res) => {
       return res.status(404).json({ error: 'Team not found' });
     }
 
-    const currentMembers = await resolveTeamMembers(team);
-    const canAccess = role === 'admin' || currentMembers.includes(userId);
+    const access = await resolveTeamManagementAccess(team, userId, role);
 
-    if (!canAccess) {
+    if (!access.isMember) {
       return res.status(403).json({ error: 'Not allowed' });
     }
 
@@ -2026,14 +2045,8 @@ exports.updateTeamDetails = async (req, res) => {
       return res.status(400).json({ error: 'This team is managed by workspace defaults' });
     }
 
-    const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team)
-      && (role === 'admin' || currentMembers.includes(userId));
-    const canManageTeam = role === 'admin'
-      || team.createdBy === userId
-      || canManageLegacyCustomTeam;
-
-    if (!canManageTeam) {
-      return res.status(403).json({ error: 'Only the group creator or an admin can update this group' });
+    if (!access.canManage) {
+      return res.status(403).json({ error: 'Only the group creator or a member admin can update this group' });
     }
 
     if (nextName) {
@@ -2045,6 +2058,10 @@ exports.updateTeamDetails = async (req, res) => {
 
       if (nextMembers.length === 0) {
         return res.status(400).json({ error: 'A group must have at least one member' });
+      }
+
+      if (access.creatorId && !nextMembers.includes(access.creatorId)) {
+        return res.status(400).json({ error: 'The group creator cannot be removed without transferring ownership first' });
       }
 
       team.members = nextMembers;
@@ -2065,10 +2082,11 @@ exports.updateTeamDetails = async (req, res) => {
 exports.leaveTeamConversation = async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const userId = await normalizeUserId(req.body?.userId);
+    const actor = getAuthenticatedInternalActor(req);
+    const { userId, role } = actor;
 
     if (!userId) {
-      return res.status(400).json({ error: 'Invalid userId' });
+      return res.status(403).json({ error: 'Not allowed' });
     }
 
     const team = await getTeamDocumentByConversationId(conversationId);
@@ -2081,10 +2099,15 @@ exports.leaveTeamConversation = async (req, res) => {
       return res.status(400).json({ error: 'This team is managed by workspace defaults' });
     }
 
-    const currentMembers = await resolveTeamMembers(team);
+    const access = await resolveTeamManagementAccess(team, userId, role);
+    const currentMembers = access.members;
 
-    if (!currentMembers.includes(userId)) {
-      return res.status(400).json({ error: 'You are not a member of this group' });
+    if (!access.isMember) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    if (access.isOwner) {
+      return res.status(400).json({ error: 'The group creator cannot leave this group. Delete the group or transfer ownership first.' });
     }
 
     const remainingMembers = currentMembers.filter((memberId) => memberId !== userId);
