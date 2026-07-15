@@ -395,35 +395,27 @@ const buildTeamMemberDirectory = async () => {
   }, {});
 };
 
-const resolveTeamManagementAccess = async (team, currentUserId, role) => {
+const resolveTeamManagementAccess = async (team, currentUserId) => {
   const members = await resolveTeamMembers(team);
   const normalizedUserId = normalizeUserIdValue(currentUserId);
   const creatorId = normalizeUserIdValue(team?.createdBy);
   const isMember = Boolean(normalizedUserId && members.includes(normalizedUserId));
   const isOwner = Boolean(normalizedUserId && creatorId && creatorId === normalizedUserId);
   const manageable = !isSystemManagedTeam(team);
-  const isMemberAdmin = role === 'admin' && isMember;
-  const canManageLegacyCustomTeam = isLegacyCustomSystemTeam(team) && isMemberAdmin;
-  const canManage = manageable && isMember && (
-    isOwner
-    || isMemberAdmin
-    || canManageLegacyCustomTeam
-  );
+  const canManage = manageable && isMember && isOwner;
 
   return {
     members,
     creatorId,
     isMember,
     isOwner,
-    isMemberAdmin,
     manageable,
-    canManageLegacyCustomTeam,
     canManage,
   };
 };
 
 const buildTeamDetailsPayload = async (team, currentUserId, role) => {
-  const access = await resolveTeamManagementAccess(team, currentUserId, role);
+  const access = await resolveTeamManagementAccess(team, currentUserId);
   const { members } = access;
   const userDirectory = await buildTeamMemberDirectory();
 
@@ -446,7 +438,7 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     managementNote: access.manageable
       ? (
         isLegacyCustomSystemTeam(team)
-          ? 'This group was created before ownership tracking was added. Current member admins can manage it.'
+          ? 'This group was created before ownership tracking was added. Only the recorded creator can manage it.'
           : ''
       )
       : 'This team is managed by workspace defaults and can only be viewed here.',
@@ -1649,7 +1641,7 @@ exports.deleteTeamConversation = async (req, res) => {
     }
 
     if (!access.canManage) {
-      return res.status(403).json({ error: 'Only the group creator or a member admin can delete this group' });
+      return res.status(403).json({ error: 'Only the group creator can delete this group' });
     }
 
     team.members = [];
@@ -2046,7 +2038,7 @@ exports.updateTeamDetails = async (req, res) => {
     }
 
     if (!access.canManage) {
-      return res.status(403).json({ error: 'Only the group creator or a member admin can update this group' });
+      return res.status(403).json({ error: 'Only the group creator can update this group' });
     }
 
     if (nextName) {
