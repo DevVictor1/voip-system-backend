@@ -26,6 +26,30 @@ const teamSchema = new mongoose.Schema(
       trim: true,
       maxlength: 500,
     },
+    avatarUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    avatarStoragePath: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    avatarFileName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    avatarMimeType: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    avatarUpdatedAt: {
+      type: Date,
+      default: null,
+    },
     members: {
       type: [String],
       default: [],
