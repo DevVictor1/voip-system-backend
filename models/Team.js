@@ -20,6 +20,12 @@ const teamSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    description: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 500,
+    },
     members: {
       type: [String],
       default: [],

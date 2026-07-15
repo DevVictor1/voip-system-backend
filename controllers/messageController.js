@@ -20,6 +20,7 @@ const {
 
 const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
+const TEAM_DESCRIPTION_MAX_LENGTH = 500;
 const TEAM_MENTION_PATTERN = /(^|\s)@([A-Za-z0-9._-]+)/g;
 const TEAM_CALENDAR_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Ho_Chi_Minh'];
 const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
@@ -427,6 +428,7 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     conversationId: team.slug || team.id,
     teamId: team.slug || team.id,
     teamName: team.name,
+    description: typeof team.description === 'string' ? team.description : '',
     memberCount: members.length,
     createdBy: team.createdBy || '',
     department: normalizeDepartment(team.department) || '',
@@ -2016,6 +2018,8 @@ exports.updateTeamDetails = async (req, res) => {
     const { userId, role } = actor;
     const nextName = String(req.body?.teamName || '').trim();
     const requestedMemberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : null;
+    const hasDescriptionUpdate = Object.prototype.hasOwnProperty.call(req.body || {}, 'description');
+    const nextDescription = hasDescriptionUpdate ? String(req.body.description || '').trim() : null;
 
     if (!userId) {
       return res.status(403).json({ error: 'Not allowed' });
@@ -2041,8 +2045,20 @@ exports.updateTeamDetails = async (req, res) => {
       return res.status(403).json({ error: 'Only the group creator can update this group' });
     }
 
+    if (hasDescriptionUpdate && typeof req.body.description !== 'string') {
+      return res.status(400).json({ error: 'Group description must be text' });
+    }
+
+    if (hasDescriptionUpdate && nextDescription.length > TEAM_DESCRIPTION_MAX_LENGTH) {
+      return res.status(400).json({ error: `Group description must be ${TEAM_DESCRIPTION_MAX_LENGTH} characters or less` });
+    }
+
     if (nextName) {
       team.name = nextName;
+    }
+
+    if (hasDescriptionUpdate) {
+      team.description = nextDescription;
     }
 
     if (requestedMemberIds) {
