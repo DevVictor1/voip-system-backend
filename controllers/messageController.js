@@ -20,11 +20,13 @@ const {
 
 const INTERNAL_TYPES = ['internal_dm', 'team'];
 const DEFAULT_TEAM_CREATOR = 'system';
+const TEAM_DESCRIPTION_MAX_LENGTH = 500;
 const TEAM_MENTION_PATTERN = /(^|\s)@([A-Za-z0-9._-]+)/g;
 const TEAM_CALENDAR_TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Ho_Chi_Minh'];
 const ALLOWED_MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 const INTERNAL_ATTACHMENT_UPLOAD_PATH_PREFIX = '/uploads/internal-chat/';
+const TEAM_AVATAR_UPLOAD_PATH_PREFIX = '/uploads/team-avatars/';
 const INTERNAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const MAX_INTERNAL_ATTACHMENT_FILES = 10;
 const ALLOWED_INTERNAL_ATTACHMENT_TYPES = new Set([
@@ -122,6 +124,7 @@ const mapTeamRecordToRuntime = (team) => ({
   name: team.name,
   participants: team.members || [],
   department: normalizeDepartment(team.department),
+  avatarUrl: team.avatarUrl || '',
 });
 
 const getActiveInternalUsers = async () => {
@@ -427,6 +430,11 @@ const buildTeamDetailsPayload = async (team, currentUserId, role) => {
     conversationId: team.slug || team.id,
     teamId: team.slug || team.id,
     teamName: team.name,
+    description: typeof team.description === 'string' ? team.description : '',
+    avatarUrl: typeof team.avatarUrl === 'string' ? team.avatarUrl : '',
+    avatarFileName: typeof team.avatarFileName === 'string' ? team.avatarFileName : '',
+    avatarMimeType: typeof team.avatarMimeType === 'string' ? team.avatarMimeType : '',
+    avatarUpdatedAt: team.avatarUpdatedAt || null,
     memberCount: members.length,
     createdBy: team.createdBy || '',
     department: normalizeDepartment(team.department) || '',
@@ -748,6 +756,135 @@ const buildInternalAttachmentUrl = (fileName) => {
 };
 
 const INTERNAL_ATTACHMENT_ROOT_DIR = path.resolve(process.cwd(), 'uploads', 'internal-chat');
+const TEAM_AVATAR_ROOT_DIR = path.resolve(process.cwd(), 'uploads', 'team-avatars');
+
+const buildTeamAvatarUrl = (fileName) => {
+  const safeFileName = encodeURIComponent(String(fileName || '').replace(/[\\/]/g, ''));
+  return `${TEAM_AVATAR_UPLOAD_PATH_PREFIX}${safeFileName}`;
+};
+
+const resolveTeamAvatarAbsolutePath = (storagePath = '') => {
+  const normalizedPath = String(storagePath || '').trim().replace(/\\/g, '/');
+  if (!normalizedPath.startsWith('team-avatars/')) {
+    return '';
+  }
+
+  const relativePath = normalizedPath.slice('team-avatars/'.length).trim();
+  if (!relativePath) {
+    return '';
+  }
+
+  const resolvedPath = path.resolve(TEAM_AVATAR_ROOT_DIR, relativePath);
+  const expectedPrefix = `${TEAM_AVATAR_ROOT_DIR}${path.sep}`;
+
+  if (resolvedPath !== TEAM_AVATAR_ROOT_DIR && !resolvedPath.startsWith(expectedPrefix)) {
+    return '';
+  }
+
+  return resolvedPath;
+};
+
+const cleanupTeamAvatarFileByStoragePath = async (storagePath = '') => {
+  const absolutePath = resolveTeamAvatarAbsolutePath(storagePath);
+  if (!absolutePath) return;
+
+  await fs.promises.unlink(absolutePath).catch(() => {});
+};
+
+const cleanupTeamAvatarUploadFile = async (file = null) => {
+  if (!file?.path) return;
+
+  const resolvedPath = path.resolve(file.path);
+  const expectedPrefix = `${TEAM_AVATAR_ROOT_DIR}${path.sep}`;
+  if (resolvedPath !== TEAM_AVATAR_ROOT_DIR && !resolvedPath.startsWith(expectedPrefix)) {
+    return;
+  }
+
+  await fs.promises.unlink(resolvedPath).catch(() => {});
+};
+
+const detectTeamAvatarFileType = async (file = null) => {
+  if (!file?.path) return '';
+
+  const resolvedPath = path.resolve(file.path);
+  const expectedPrefix = `${TEAM_AVATAR_ROOT_DIR}${path.sep}`;
+  if (resolvedPath !== TEAM_AVATAR_ROOT_DIR && !resolvedPath.startsWith(expectedPrefix)) {
+    return '';
+  }
+
+  let handle;
+  try {
+    handle = await fs.promises.open(resolvedPath, 'r');
+    const buffer = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+
+    if (bytesRead >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return 'jpeg';
+    }
+
+    if (
+      bytesRead >= 8
+      && buffer[0] === 0x89
+      && buffer[1] === 0x50
+      && buffer[2] === 0x4e
+      && buffer[3] === 0x47
+      && buffer[4] === 0x0d
+      && buffer[5] === 0x0a
+      && buffer[6] === 0x1a
+      && buffer[7] === 0x0a
+    ) {
+      return 'png';
+    }
+
+    if (
+      bytesRead >= 12
+      && buffer.toString('ascii', 0, 4) === 'RIFF'
+      && buffer.toString('ascii', 8, 12) === 'WEBP'
+    ) {
+      return 'webp';
+    }
+  } catch (error) {
+    return '';
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+
+  return '';
+};
+
+const validateTeamAvatarFileSignature = async (file = null) => {
+  const detectedType = await detectTeamAvatarFileType(file);
+  const mimetype = String(file?.mimetype || '').trim().toLowerCase();
+  const extension = path.extname(file?.originalname || '').toLowerCase();
+
+  if (!detectedType) {
+    return false;
+  }
+
+  if (detectedType === 'jpeg') {
+    return mimetype === 'image/jpeg' && ['.jpg', '.jpeg'].includes(extension);
+  }
+
+  if (detectedType === 'png') {
+    return mimetype === 'image/png' && extension === '.png';
+  }
+
+  if (detectedType === 'webp') {
+    return mimetype === 'image/webp' && extension === '.webp';
+  }
+
+  return false;
+};
+
+const buildTeamAvatarFields = (file) => ({
+  avatarUrl: buildTeamAvatarUrl(file.filename),
+  avatarStoragePath: path.posix.join('team-avatars', file.filename),
+  avatarFileName: file.originalname || file.filename,
+  avatarMimeType: String(file.mimetype || '').trim().toLowerCase(),
+  avatarUpdatedAt: new Date(),
+});
 
 const resolveInternalAttachmentAbsolutePath = (storagePath = '') => {
   const normalizedPath = String(storagePath || '').trim().replace(/\\/g, '/');
@@ -1257,6 +1394,7 @@ const buildInternalConversationMap = async (userId, role) => {
       teamName: team.name,
       participants: team.participants,
       name: team.name,
+      avatarUrl: team.avatarUrl || '',
       role: 'Team Channel',
       lastMessage: '',
       lastMessageSenderName: '',
@@ -2016,6 +2154,8 @@ exports.updateTeamDetails = async (req, res) => {
     const { userId, role } = actor;
     const nextName = String(req.body?.teamName || '').trim();
     const requestedMemberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : null;
+    const hasDescriptionUpdate = Object.prototype.hasOwnProperty.call(req.body || {}, 'description');
+    const nextDescription = hasDescriptionUpdate ? String(req.body.description || '').trim() : null;
 
     if (!userId) {
       return res.status(403).json({ error: 'Not allowed' });
@@ -2041,8 +2181,20 @@ exports.updateTeamDetails = async (req, res) => {
       return res.status(403).json({ error: 'Only the group creator can update this group' });
     }
 
+    if (hasDescriptionUpdate && typeof req.body.description !== 'string') {
+      return res.status(400).json({ error: 'Group description must be text' });
+    }
+
+    if (hasDescriptionUpdate && nextDescription.length > TEAM_DESCRIPTION_MAX_LENGTH) {
+      return res.status(400).json({ error: `Group description must be ${TEAM_DESCRIPTION_MAX_LENGTH} characters or less` });
+    }
+
     if (nextName) {
       team.name = nextName;
+    }
+
+    if (hasDescriptionUpdate) {
+      team.description = nextDescription;
     }
 
     if (requestedMemberIds) {
@@ -2068,6 +2220,127 @@ exports.updateTeamDetails = async (req, res) => {
   } catch (error) {
     console.error('❌ Update team details error:', error);
     res.status(500).json({ error: 'Failed to update team details' });
+  }
+};
+
+exports.uploadTeamAvatar = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const actor = getAuthenticatedInternalActor(req);
+    const { userId, role } = actor;
+
+    if (!userId) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Avatar image is required' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const access = await resolveTeamManagementAccess(team, userId, role);
+
+    if (!access.isMember) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    if (isSystemManagedTeam(team)) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      return res.status(400).json({ error: 'This team is managed by workspace defaults' });
+    }
+
+    if (!access.canManage) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      return res.status(403).json({ error: 'Only the group creator can update this group avatar' });
+    }
+
+    const hasValidImageSignature = await validateTeamAvatarFileSignature(req.file);
+    if (!hasValidImageSignature) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      return res.status(400).json({ error: 'Avatar file must be a valid JPG, PNG, or WebP image' });
+    }
+
+    const previousStoragePath = team.avatarStoragePath || '';
+    const nextAvatarFields = buildTeamAvatarFields(req.file);
+
+    Object.assign(team, nextAvatarFields);
+
+    try {
+      await team.save();
+    } catch (error) {
+      await cleanupTeamAvatarUploadFile(req.file);
+      throw error;
+    }
+
+    if (previousStoragePath && previousStoragePath !== team.avatarStoragePath) {
+      await cleanupTeamAvatarFileByStoragePath(previousStoragePath);
+    }
+
+    const payload = await buildTeamDetailsPayload(team, userId, role);
+    return res.json(payload);
+  } catch (error) {
+    console.error('Team avatar upload error:', error);
+    return res.status(500).json({ error: 'Failed to update group avatar' });
+  }
+};
+
+exports.removeTeamAvatar = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const actor = getAuthenticatedInternalActor(req);
+    const { userId, role } = actor;
+
+    if (!userId) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const team = await getTeamDocumentByConversationId(conversationId);
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    const access = await resolveTeamManagementAccess(team, userId, role);
+
+    if (!access.isMember) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    if (isSystemManagedTeam(team)) {
+      return res.status(400).json({ error: 'This team is managed by workspace defaults' });
+    }
+
+    if (!access.canManage) {
+      return res.status(403).json({ error: 'Only the group creator can remove this group avatar' });
+    }
+
+    const previousStoragePath = team.avatarStoragePath || '';
+
+    team.avatarUrl = '';
+    team.avatarStoragePath = '';
+    team.avatarFileName = '';
+    team.avatarMimeType = '';
+    team.avatarUpdatedAt = null;
+
+    await team.save();
+
+    if (previousStoragePath) {
+      await cleanupTeamAvatarFileByStoragePath(previousStoragePath);
+    }
+
+    const payload = await buildTeamDetailsPayload(team, userId, role);
+    return res.json(payload);
+  } catch (error) {
+    console.error('Team avatar removal error:', error);
+    return res.status(500).json({ error: 'Failed to remove group avatar' });
   }
 };
 
@@ -2307,6 +2580,7 @@ exports.getConversations = async (req, res) => {
             teamName: teamRecord?.name || message.teamName || message.conversationId,
             participants: teamParticipants,
             name: teamRecord?.name || message.teamName || message.conversationId,
+            avatarUrl: teamRecord?.avatarUrl || '',
             role: 'Team Channel',
             lastMessage: '',
             lastMessageSenderName: '',
