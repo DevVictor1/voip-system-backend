@@ -49,6 +49,73 @@ const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
 const DEFAULT_INTERNAL_THREAD_PAGE_SIZE = 50;
 const MAX_INTERNAL_THREAD_PAGE_SIZE = 100;
 
+const createConversationsApiPerfTracker = () => {
+  const requestStartedAt = process.hrtime.bigint();
+  const stageDurations = {
+    authenticationTenantResolution: 0,
+    personalChatQuery: 0,
+    teamChatQuery: 0,
+    unreadCountQuery: 0,
+    participantUserEnrichment: 0,
+    sortingFormatting: 0,
+  };
+  const queryCounts = {};
+  let dbQueries = 0;
+
+  const elapsedMs = (startedAt) => Number(process.hrtime.bigint() - startedAt) / 1e6;
+  const roundMs = (value) => Math.round(value * 10) / 10;
+
+  const addStageDuration = (stageName, startedAt) => {
+    stageDurations[stageName] = (stageDurations[stageName] || 0) + elapsedMs(startedAt);
+  };
+
+  const measure = async (stageName, callback) => {
+    const startedAt = process.hrtime.bigint();
+    try {
+      return await callback();
+    } finally {
+      addStageDuration(stageName, startedAt);
+    }
+  };
+
+  const measureSync = (stageName, callback) => {
+    const startedAt = process.hrtime.bigint();
+    try {
+      return callback();
+    } finally {
+      addStageDuration(stageName, startedAt);
+    }
+  };
+
+  const query = async (stageName, queryName, callback) => {
+    dbQueries += 1;
+    queryCounts[queryName] = (queryCounts[queryName] || 0) + 1;
+    return measure(stageName, callback);
+  };
+
+  const log = (extra = {}) => {
+    const formattedStages = Object.entries(stageDurations).reduce((acc, [key, value]) => {
+      acc[key] = roundMs(value);
+      return acc;
+    }, {});
+
+    console.log('[perf:conversations-api]', {
+      ...extra,
+      totalDurationMs: roundMs(elapsedMs(requestStartedAt)),
+      stageDurationsMs: formattedStages,
+      dbQueries,
+      queryCounts,
+    });
+  };
+
+  return {
+    measure,
+    measureSync,
+    query,
+    log,
+  };
+};
+
 const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
   return normalized || '';
@@ -127,13 +194,17 @@ const mapTeamRecordToRuntime = (team) => ({
   avatarUrl: team.avatarUrl || '',
 });
 
-const getActiveInternalUsers = async () => {
-  return User.find({
+const getActiveInternalUsers = async (perfTracker = null) => {
+  const runQuery = () => User.find({
     isActive: true,
     agentId: { $type: 'string', $ne: '' },
   })
     .select('name role agentId department isActive avatarUrl')
     .sort({ name: 1, createdAt: 1 });
+
+  return perfTracker
+    ? perfTracker.query('participantUserEnrichment', 'activeInternalUsers', runQuery)
+    : runQuery();
 };
 
 const findConfigTeamById = (teamId) => {
@@ -172,21 +243,27 @@ const isSystemManagedTeam = (team) => {
   return isConfiguredDefaultTeam(team);
 };
 
-const ensureDefaultTeams = async () => {
+const ensureDefaultTeams = async (perfTracker = null) => {
   const configuredSlugs = TEAM_CHANNELS.map((team) => team.id);
 
   await Promise.all(
     TEAM_CHANNELS.map((team) =>
-      Team.findOneAndUpdate(
-        { slug: team.id },
-        { $set: mapConfigTeamToTeamRecord(team) },
-        { upsert: true, returnDocument: 'after' }
-      )
+      perfTracker
+        ? perfTracker.query('teamChatQuery', 'defaultTeamUpsert', () => Team.findOneAndUpdate(
+          { slug: team.id },
+          { $set: mapConfigTeamToTeamRecord(team) },
+          { upsert: true, returnDocument: 'after' }
+        ))
+        : Team.findOneAndUpdate(
+          { slug: team.id },
+          { $set: mapConfigTeamToTeamRecord(team) },
+          { upsert: true, returnDocument: 'after' }
+        )
     )
   );
 
   // Retire old system-defined team channels that no longer exist in config.
-  await Team.updateMany(
+  const retireOldTeams = () => Team.updateMany(
     {
       createdBy: DEFAULT_TEAM_CREATOR,
       department: { $in: ['tech', 'support', 'sales'] },
@@ -198,6 +275,12 @@ const ensureDefaultTeams = async () => {
     }
   );
 
+  if (perfTracker) {
+    await perfTracker.query('teamChatQuery', 'defaultTeamRetire', retireOldTeams);
+    return perfTracker.query('teamChatQuery', 'activeTeams', () => Team.find({ isActive: true }).sort({ name: 1 }));
+  }
+
+  await retireOldTeams();
   return Team.find({ isActive: true }).sort({ name: 1 });
 };
 
@@ -211,7 +294,7 @@ const cloneTeamRecordWithMembers = (team, members) => {
   };
 };
 
-const resolveTeamMembers = async (team) => {
+const resolveTeamMembers = async (team, perfTracker = null) => {
   const fallbackMembers = team?.members || team?.participants || [];
   const department = normalizeDepartment(team?.department);
 
@@ -219,7 +302,7 @@ const resolveTeamMembers = async (team) => {
     return getSortedParticipants(fallbackMembers);
   }
 
-  const departmentUsers = await User.find({
+  const runQuery = () => User.find({
     department,
     isActive: true,
     agentId: { $type: 'string', $ne: '' },
@@ -227,32 +310,39 @@ const resolveTeamMembers = async (team) => {
     .select('agentId')
     .sort({ name: 1 });
 
+  const departmentUsers = perfTracker
+    ? await perfTracker.query('participantUserEnrichment', 'departmentTeamMembers', runQuery)
+    : await runQuery();
+
   return getSortedParticipants([
     ...fallbackMembers,
     ...departmentUsers.map((user) => user.agentId).filter(Boolean),
   ]);
 };
 
-const getVisibleTeams = async (userId) => {
-  const teams = await ensureDefaultTeams();
+const getVisibleTeams = async (userId, perfTracker = null) => {
+  const teams = await ensureDefaultTeams(perfTracker);
   const resolvedTeams = await Promise.all(
-    teams.map(async (team) => cloneTeamRecordWithMembers(team, await resolveTeamMembers(team)))
+    teams.map(async (team) => cloneTeamRecordWithMembers(team, await resolveTeamMembers(team, perfTracker)))
   );
 
   return resolvedTeams.filter((team) => (team.members || []).includes(userId));
 };
 
-const ensureTeamConversation = async (team) => {
+const ensureTeamConversation = async (team, perfTracker = null) => {
   if (!team) return null;
 
   const teamId = team.slug || team.id;
-  const participants = await resolveTeamMembers(team);
-  let conversation = await Conversation.findOne({
+  const participants = await resolveTeamMembers(team, perfTracker);
+  const findConversation = () => Conversation.findOne({
     $or: [
       { type: 'team', teamId },
       { type: 'team', conversationId: teamId },
     ],
   }).sort({ createdAt: 1 });
+  let conversation = perfTracker
+    ? await perfTracker.query('teamChatQuery', 'teamConversationFind', findConversation)
+    : await findConversation();
 
   if (conversation) {
     let shouldSave = false;
@@ -278,13 +368,17 @@ const ensureTeamConversation = async (team) => {
     }
 
     if (shouldSave) {
-      await conversation.save();
+      if (perfTracker) {
+        await perfTracker.query('teamChatQuery', 'teamConversationSave', () => conversation.save());
+      } else {
+        await conversation.save();
+      }
     }
 
     return conversation;
   }
 
-  return Conversation.create({
+  const createConversation = () => Conversation.create({
     conversationId: teamId,
     type: 'team',
     title: team.name,
@@ -292,13 +386,20 @@ const ensureTeamConversation = async (team) => {
     participants,
     createdBy: team.createdBy || DEFAULT_TEAM_CREATOR,
   });
+
+  return perfTracker
+    ? perfTracker.query('teamChatQuery', 'teamConversationCreate', createConversation)
+    : createConversation();
 };
 
-const ensureTeamRecord = async ({ teamId, teamName, participants, allowMembershipUpdate = true }) => {
+const ensureTeamRecord = async ({ teamId, teamName, participants, allowMembershipUpdate = true }, perfTracker = null) => {
   const resolvedTeamId = teamId || '';
   if (!resolvedTeamId) return null;
 
-  let team = await Team.findOne({ slug: resolvedTeamId });
+  const findTeam = () => Team.findOne({ slug: resolvedTeamId });
+  let team = perfTracker
+    ? await perfTracker.query('teamChatQuery', 'teamRecordFind', findTeam)
+    : await findTeam();
 
   if (team && team.isActive === false) {
     return null;
@@ -314,7 +415,7 @@ const ensureTeamRecord = async ({ teamId, teamName, participants, allowMembershi
       return null;
     }
 
-    team = await Team.create({
+    const createTeam = () => Team.create({
       name: nextName,
       slug: resolvedTeamId,
       members: nextMembers,
@@ -322,15 +423,22 @@ const ensureTeamRecord = async ({ teamId, teamName, participants, allowMembershi
       createdBy: DEFAULT_TEAM_CREATOR,
       isActive: true,
     });
+    team = perfTracker
+      ? await perfTracker.query('teamChatQuery', 'teamRecordCreate', createTeam)
+      : await createTeam();
   } else if (allowMembershipUpdate && participants?.length) {
     const nextMembers = getSortedParticipants(participants);
     if ((team.members || []).join('|') !== nextMembers.join('|')) {
       team.members = nextMembers;
-      await team.save();
+      if (perfTracker) {
+        await perfTracker.query('teamChatQuery', 'teamRecordSave', () => team.save());
+      } else {
+        await team.save();
+      }
     }
   }
 
-  await ensureTeamConversation(team);
+  await ensureTeamConversation(team, perfTracker);
   return team;
 };
 
@@ -500,18 +608,25 @@ const generateUniqueTeamSlug = async (name) => {
   return slug;
 };
 
-const syncConversationSummary = async (conversationId, type, conversationRecord = null) => {
+const syncConversationSummary = async (conversationId, type, conversationRecord = null, perfTracker = null) => {
   if (!conversationId || !type) return conversationRecord || null;
 
-  const latestMessage = await Message.findOne({
+  const stageName = type === 'team' ? 'teamChatQuery' : 'personalChatQuery';
+  const latestMessageQuery = () => Message.findOne({
     conversationId,
     conversationType: type,
   }).sort({ createdAt: -1 });
+  const latestMessage = perfTracker
+    ? await perfTracker.query(stageName, 'latestConversationMessage', latestMessageQuery)
+    : await latestMessageQuery();
 
-  const conversation = conversationRecord || await Conversation.findOne({
+  const conversationQuery = () => Conversation.findOne({
     conversationId,
     type,
   }).sort({ createdAt: 1 });
+  const conversation = conversationRecord || (perfTracker
+    ? await perfTracker.query(stageName, 'conversationSummaryFind', conversationQuery)
+    : await conversationQuery());
 
   if (!conversation) {
     return null;
@@ -530,7 +645,11 @@ const syncConversationSummary = async (conversationId, type, conversationRecord 
   if (currentPreview !== nextPreview || currentTimestamp !== nextTimeValue) {
     conversation.lastMessagePreview = nextPreview;
     conversation.lastMessageAt = nextTimestamp;
-    await conversation.save();
+    if (perfTracker) {
+      await perfTracker.query(stageName, 'conversationSummarySave', () => conversation.save());
+    } else {
+      await conversation.save();
+    }
   }
 
   return conversation;
@@ -1344,9 +1463,9 @@ const resolveInternalConversationAccess = async ({
   };
 };
 
-const buildInternalConversationMap = async (userId, role) => {
+const buildInternalConversationMap = async (userId, role, perfTracker = null) => {
   const conversations = new Map();
-  const activeUsers = await getActiveInternalUsers();
+  const activeUsers = await getActiveInternalUsers(perfTracker);
 
   activeUsers.forEach((user) => {
     const agentId = user?.agentId;
@@ -1379,10 +1498,10 @@ const buildInternalConversationMap = async (userId, role) => {
     });
   });
 
-  const visibleTeams = await getVisibleTeams(userId);
+  const visibleTeams = await getVisibleTeams(userId, perfTracker);
 
   for (const teamRecord of visibleTeams) {
-    const teamConversation = await ensureTeamConversation(teamRecord);
+    const teamConversation = await ensureTeamConversation(teamRecord, perfTracker);
     const team = mapTeamRecordToRuntime(teamRecord);
 
     conversations.set(teamConversation?.conversationId || team.id, {
@@ -1526,7 +1645,7 @@ const ensureDmConversationRecord = async ({
   conversationId,
   participants,
   createdBy,
-}) => {
+}, perfTracker = null) => {
   const resolvedParticipants = getSortedParticipants(
     participants?.length ? participants : [currentUserId, targetUserId]
   );
@@ -1540,12 +1659,15 @@ const ensureDmConversationRecord = async ({
     resolvedParticipants[1]
   );
 
-  let conversation = await Conversation.findOne({
+  const findConversation = () => Conversation.findOne({
     $or: [
       { conversationId: legacyConversationId, type: 'internal_dm' },
       { type: 'internal_dm', participants: { $all: resolvedParticipants, $size: 2 } },
     ],
   }).sort({ createdAt: 1 });
+  let conversation = perfTracker
+    ? await perfTracker.query('personalChatQuery', 'dmConversationFind', findConversation)
+    : await findConversation();
 
   if (conversation) {
     let shouldSave = false;
@@ -1566,24 +1688,31 @@ const ensureDmConversationRecord = async ({
     }
 
     if (shouldSave) {
-      await conversation.save();
+      if (perfTracker) {
+        await perfTracker.query('personalChatQuery', 'dmConversationSave', () => conversation.save());
+      } else {
+        await conversation.save();
+      }
     }
 
     return conversation;
   }
 
-  conversation = await Conversation.create({
+  const createConversation = () => Conversation.create({
     conversationId: legacyConversationId,
     type: 'internal_dm',
     title: getDmConversationTitle(resolvedParticipants, currentUserId || createdBy || resolvedParticipants[0]),
     participants: resolvedParticipants,
     createdBy: createdBy || currentUserId || resolvedParticipants[0],
   });
+  conversation = perfTracker
+    ? await perfTracker.query('personalChatQuery', 'dmConversationCreate', createConversation)
+    : await createConversation();
 
   return conversation;
 };
 
-const ensureDmConversationForMessage = async (message) => {
+const ensureDmConversationForMessage = async (message, perfTracker = null) => {
   if (!message || message.conversationType !== 'internal_dm') {
     return null;
   }
@@ -1603,7 +1732,7 @@ const ensureDmConversationForMessage = async (message) => {
     participants,
     createdBy: message.senderId || participants[0],
     currentUserId: message.senderId || participants[0],
-  });
+  }, perfTracker);
 };
 
 const mapFallbackTeam = (team) => ({
@@ -2414,16 +2543,19 @@ exports.leaveTeamConversation = async (req, res) => {
 };
 
 exports.getConversations = async (req, res) => {
+  const perfTracker = createConversationsApiPerfTracker();
+
   try {
-    const actor = getAuthenticatedInternalActor(req);
+    const actor = perfTracker.measureSync('authenticationTenantResolution', () => getAuthenticatedInternalActor(req));
     const { userId, role } = actor;
 
     if (!userId) {
+      perfTracker.log({ status: 'forbidden' });
       return res.status(403).json({ error: 'Not allowed' });
     }
 
-    const conversations = await buildInternalConversationMap(userId, role);
-    const activeUsers = await getActiveInternalUsers();
+    const conversations = await buildInternalConversationMap(userId, role, perfTracker);
+    const activeUsers = await getActiveInternalUsers(perfTracker);
     const activeUsersByAgentId = activeUsers.reduce((acc, user) => {
       if (user?.agentId) {
         acc[user.agentId] = user;
@@ -2435,17 +2567,18 @@ exports.getConversations = async (req, res) => {
         .map((user) => normalizeUserIdValue(user?.agentId))
         .filter(Boolean)
     );
-    const dmRecords = await Conversation.find({
+    const dmRecords = await perfTracker.query('personalChatQuery', 'dmConversationRecords', () => Conversation.find({
       type: 'internal_dm',
       participants: userId,
       isArchived: false,
-    }).sort({ updatedAt: -1 });
+    }).sort({ updatedAt: -1 }));
 
     for (const dmRecord of dmRecords) {
       const conversation = await syncConversationSummary(
         dmRecord.conversationId,
         'internal_dm',
-        dmRecord
+        dmRecord,
+        perfTracker
       ) || dmRecord;
       const participants = getSortedParticipants(conversation.participants);
       const otherAgentId = getOtherParticipant(participants, userId) || conversation.createdBy;
@@ -2477,11 +2610,12 @@ exports.getConversations = async (req, res) => {
       });
     }
 
-    const messages = await Message.find({
+    const messages = await perfTracker.query('unreadCountQuery', 'allInternalMessagesForConversationList', () => Message.find({
       conversationType: { $in: INTERNAL_TYPES },
-    }).sort({ createdAt: -1 });
+    }).sort({ createdAt: -1 }));
     const teamReadAccessCache = new Map();
 
+    await perfTracker.measure('sortingFormatting', async () => {
     for (const message of messages) {
       let currentTeamMembers = null;
 
@@ -2498,8 +2632,8 @@ exports.getConversations = async (req, res) => {
             teamName: message.teamName || message.conversationId,
             participants: message.participants || [],
             allowMembershipUpdate: false,
-          });
-          const teamMembers = teamRecord ? await resolveTeamMembers(teamRecord) : [];
+          }, perfTracker);
+          const teamMembers = teamRecord ? await resolveTeamMembers(teamRecord, perfTracker) : [];
           cachedAccess = {
             teamRecord,
             members: teamMembers,
@@ -2537,7 +2671,7 @@ exports.getConversations = async (req, res) => {
             continue;
           }
 
-          const conversationRecord = await ensureDmConversationForMessage(message);
+          const conversationRecord = await ensureDmConversationForMessage(message, perfTracker);
           const otherAgent = getAgentMeta(otherAgentId);
           const otherAgentRecord = activeUsersByAgentId[otherAgentId];
           const resolvedConversationId = conversationRecord?.conversationId || message.conversationId;
@@ -2566,8 +2700,8 @@ exports.getConversations = async (req, res) => {
             teamId: message.teamId || message.conversationId,
             teamName: message.teamName || message.conversationId,
             participants: message.participants || [],
-          });
-          const teamConversation = teamRecord ? await ensureTeamConversation(teamRecord) : null;
+          }, perfTracker);
+          const teamConversation = teamRecord ? await ensureTeamConversation(teamRecord, perfTracker) : null;
           const teamParticipants = getSortedParticipants(teamRecord?.members || message.participants || []);
           const resolvedConversationId = teamConversation?.conversationId || message.conversationId;
 
@@ -2621,13 +2755,25 @@ exports.getConversations = async (req, res) => {
         }
       }
     }
+    });
 
-    const result = Array.from(conversations.values())
+    const result = perfTracker.measureSync('sortingFormatting', () => Array.from(conversations.values())
       .filter((conversation) => isConversationVisible(conversation, userId, role))
-      .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+      .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)));
 
+    perfTracker.log({
+      status: 'success',
+      conversationCount: result.length,
+      dmRecordCount: dmRecords.length,
+      internalMessageCount: messages.length,
+      teamConversationCount: teamReadAccessCache.size,
+    });
     res.json(result);
   } catch (error) {
+    perfTracker.log({
+      status: 'error',
+      errorName: error?.name || 'Error',
+    });
     console.error('❌ Internal conversations error:', error);
     res.status(500).json({ error: 'Failed to fetch conversations' });
   }
