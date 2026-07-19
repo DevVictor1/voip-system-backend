@@ -223,7 +223,8 @@ const getActiveInternalUsers = async (perfTracker = null) => {
     agentId: { $type: 'string', $ne: '' },
   })
     .select('name role agentId department isActive avatarUrl')
-    .sort({ name: 1, createdAt: 1 });
+    .sort({ name: 1, createdAt: 1 })
+    .lean();
 
   return perfTracker
     ? perfTracker.query('participantUserEnrichment', 'activeInternalUsers', runQuery)
@@ -2869,18 +2870,10 @@ exports.getConversations = async (req, res) => {
         .map((team) => normalizeDepartment(team?.department))
         .filter(Boolean)
     )];
-    const departmentUsers = teamDepartments.length > 0
-      ? await perfTracker.query('participantUserEnrichment', 'departmentTeamMembersBatch', () => User.find({
-        department: { $in: teamDepartments },
-        isActive: true,
-        agentId: { $type: 'string', $ne: '' },
-      })
-        .select('agentId department')
-        .sort({ name: 1 })
-        .lean())
-      : [];
-    const departmentUsersByDepartment = departmentUsers.reduce((acc, user) => {
+    const teamDepartmentSet = new Set(teamDepartments);
+    const departmentUsersByDepartment = activeUsers.reduce((acc, user) => {
       const department = normalizeDepartment(user?.department);
+      if (!teamDepartmentSet.has(department)) return acc;
       if (!department || !user?.agentId) return acc;
       if (!acc.has(department)) {
         acc.set(department, []);
