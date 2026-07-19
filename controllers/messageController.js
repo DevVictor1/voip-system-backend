@@ -116,6 +116,29 @@ const createConversationsApiPerfTracker = () => {
   };
 };
 
+const resolveTeamMembersFromDirectory = (team, departmentUsersByDepartment = new Map()) => {
+  const fallbackMembers = team?.members || team?.participants || [];
+  const department = normalizeDepartment(team?.department);
+  const departmentMembers = department
+    ? departmentUsersByDepartment.get(department) || []
+    : [];
+
+  return getSortedParticipants([
+    ...fallbackMembers,
+    ...departmentMembers,
+  ]);
+};
+
+const getFirstConversationByTeamId = (conversationRecords = [], teamId = '') => {
+  const normalizedTeamId = String(teamId || '').trim();
+  if (!normalizedTeamId) return null;
+
+  return conversationRecords.find((conversation) => (
+    conversation?.teamId === normalizedTeamId
+    || conversation?.conversationId === normalizedTeamId
+  )) || null;
+};
+
 const normalizeUserIdValue = (userId) => {
   const normalized = String(userId || '').trim();
   return normalized || '';
@@ -2542,7 +2565,7 @@ exports.leaveTeamConversation = async (req, res) => {
   }
 };
 
-exports.getConversations = async (req, res) => {
+const getConversationsLegacyForInstrumentation = async (req, res) => {
   const perfTracker = createConversationsApiPerfTracker();
 
   try {
@@ -2776,6 +2799,351 @@ exports.getConversations = async (req, res) => {
     });
     console.error('❌ Internal conversations error:', error);
     res.status(500).json({ error: 'Failed to fetch conversations' });
+  }
+};
+
+exports.getConversations = async (req, res) => {
+  const perfTracker = createConversationsApiPerfTracker();
+
+  try {
+    const actor = perfTracker.measureSync('authenticationTenantResolution', () => getAuthenticatedInternalActor(req));
+    const { userId, role } = actor;
+
+    if (!userId) {
+      perfTracker.log({ status: 'forbidden' });
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const conversations = new Map();
+    const activeUsers = await getActiveInternalUsers(perfTracker);
+    const activeUsersByAgentId = activeUsers.reduce((acc, user) => {
+      if (user?.agentId) {
+        acc[user.agentId] = user;
+      }
+      return acc;
+    }, {});
+    const activeUserAgentIds = new Set(
+      activeUsers
+        .map((user) => normalizeUserIdValue(user?.agentId))
+        .filter(Boolean)
+    );
+
+    perfTracker.measureSync('sortingFormatting', () => {
+      activeUsers.forEach((user) => {
+        const agentId = user?.agentId;
+        if (!agentId || agentId === userId) return;
+
+        const fallbackMeta = getAgentMeta(agentId);
+        const displayName = user.name || fallbackMeta.name || agentId;
+        const roleLabel = normalizeDepartment(user.department)
+          ? teamDepartmentLabel(user.department)
+          : (user.role === 'admin' ? 'Admin' : user.role || fallbackMeta.role || 'Agent');
+        const conversationId = buildDmConversationId(userId, agentId);
+
+        conversations.set(conversationId, {
+          conversationType: 'internal_dm',
+          type: 'internal_dm',
+          conversationId,
+          participants: [userId, agentId].sort(),
+          name: displayName,
+          role: roleLabel,
+          agentId,
+          avatarUrl: user.avatarUrl || '',
+          lastMessage: '',
+          updatedAt: null,
+          unread: 0,
+          unreadMentionCount: 0,
+          latestUnreadMentionMessageId: '',
+          isInternal: true,
+          isTeam: false,
+          previewFallback: `Message ${displayName}`,
+        });
+      });
+    });
+
+    const activeTeams = await perfTracker.query('teamChatQuery', 'activeTeamsReadOnly', () => Team.find({
+      isActive: true,
+    }).sort({ name: 1 }).lean());
+    const teamDepartments = [...new Set(
+      activeTeams
+        .map((team) => normalizeDepartment(team?.department))
+        .filter(Boolean)
+    )];
+    const departmentUsers = teamDepartments.length > 0
+      ? await perfTracker.query('participantUserEnrichment', 'departmentTeamMembersBatch', () => User.find({
+        department: { $in: teamDepartments },
+        isActive: true,
+        agentId: { $type: 'string', $ne: '' },
+      })
+        .select('agentId department')
+        .sort({ name: 1 })
+        .lean())
+      : [];
+    const departmentUsersByDepartment = departmentUsers.reduce((acc, user) => {
+      const department = normalizeDepartment(user?.department);
+      if (!department || !user?.agentId) return acc;
+      if (!acc.has(department)) {
+        acc.set(department, []);
+      }
+      acc.get(department).push(user.agentId);
+      return acc;
+    }, new Map());
+    const visibleTeams = perfTracker.measureSync('teamChatQuery', () => activeTeams
+      .map((team) => ({
+        ...team,
+        members: resolveTeamMembersFromDirectory(team, departmentUsersByDepartment),
+      }))
+      .filter((team) => (team.members || []).includes(userId)));
+    const visibleTeamIds = visibleTeams
+      .map((team) => String(team.slug || team.id || '').trim())
+      .filter(Boolean);
+    const teamConversationRecords = visibleTeamIds.length > 0
+      ? await perfTracker.query('teamChatQuery', 'teamConversationRecordsBatch', () => Conversation.find({
+        type: 'team',
+        $or: [
+          { teamId: { $in: visibleTeamIds } },
+          { conversationId: { $in: visibleTeamIds } },
+        ],
+      }).sort({ createdAt: 1 }).lean())
+      : [];
+    const teamConversationByTeamId = visibleTeamIds.reduce((acc, teamId) => {
+      acc.set(teamId, getFirstConversationByTeamId(teamConversationRecords, teamId));
+      return acc;
+    }, new Map());
+
+    perfTracker.measureSync('sortingFormatting', () => {
+      visibleTeams.forEach((teamRecord) => {
+        const teamId = teamRecord.slug || teamRecord.id;
+        const teamConversation = teamConversationByTeamId.get(teamId);
+        const conversationId = teamConversation?.conversationId || teamId;
+
+        conversations.set(conversationId, {
+          conversationType: 'team',
+          type: 'team',
+          id: conversationId,
+          conversationId,
+          teamId,
+          teamName: teamRecord.name,
+          participants: teamRecord.members || [],
+          name: teamRecord.name,
+          avatarUrl: teamRecord.avatarUrl || '',
+          role: 'Team Channel',
+          lastMessage: '',
+          lastMessageSenderName: '',
+          updatedAt: null,
+          unread: 0,
+          unreadMentionCount: 0,
+          latestUnreadMentionMessageId: '',
+          isInternal: true,
+          isTeam: true,
+          previewFallback: `Start the conversation in ${teamRecord.name}`,
+        });
+      });
+    });
+
+    const dmRecords = await perfTracker.query('personalChatQuery', 'dmConversationRecords', () => Conversation.find({
+      type: 'internal_dm',
+      participants: userId,
+      isArchived: false,
+    }).sort({ updatedAt: -1 }).lean());
+
+    perfTracker.measureSync('sortingFormatting', () => {
+      for (const conversation of dmRecords) {
+        const participants = getSortedParticipants(conversation.participants);
+        const otherAgentId = getOtherParticipant(participants, userId) || conversation.createdBy;
+
+        if (!otherAgentId || isLegacyInternalParticipant(otherAgentId) || !activeUserAgentIds.has(otherAgentId)) {
+          continue;
+        }
+
+        const otherAgent = getAgentMeta(otherAgentId);
+        const otherAgentRecord = activeUsersByAgentId[otherAgentId];
+        const conversationId = conversation.conversationId || buildDmConversationId(...participants);
+
+        conversations.set(conversationId, {
+          conversationType: 'internal_dm',
+          type: 'internal_dm',
+          id: conversationId,
+          conversationId,
+          participants,
+          name: conversation.title || otherAgent.name,
+          role: otherAgent.role,
+          agentId: otherAgentId,
+          avatarUrl: otherAgentRecord?.avatarUrl || '',
+          lastMessage: conversation.lastMessagePreview || '',
+          updatedAt: conversation.lastMessageAt || conversation.updatedAt || null,
+          unread: 0,
+          unreadMentionCount: 0,
+          latestUnreadMentionMessageId: '',
+          isInternal: true,
+          isTeam: false,
+          previewFallback: `Message ${otherAgent.name}`,
+        });
+      }
+    });
+
+    const visibleConversationPairs = Array.from(conversations.values())
+      .filter((conversation) => isConversationVisibleForRead(conversation, userId))
+      .map((conversation) => ({
+        conversationId: conversation.conversationId,
+        conversationType: conversation.conversationType,
+      }));
+    const visibleConversationIds = [...new Set(
+      visibleConversationPairs
+        .map((conversation) => conversation.conversationId)
+        .filter(Boolean)
+    )];
+    const visibleTypes = [...new Set(
+      visibleConversationPairs
+        .map((conversation) => conversation.conversationType)
+        .filter(Boolean)
+    )];
+    const latestMessages = visibleConversationIds.length > 0
+      ? await perfTracker.query('unreadCountQuery', 'latestVisibleInternalMessages', () => Message.aggregate([
+        {
+          $match: {
+            conversationType: { $in: visibleTypes },
+            conversationId: { $in: visibleConversationIds },
+          },
+        },
+        { $sort: { conversationType: 1, conversationId: 1, createdAt: -1, _id: -1 } },
+        {
+          $group: {
+            _id: {
+              conversationType: '$conversationType',
+              conversationId: '$conversationId',
+            },
+            message: {
+              $first: {
+                _id: '$_id',
+                body: '$body',
+                isDeleted: '$isDeleted',
+                attachment: '$attachment',
+                attachments: '$attachments',
+                senderId: '$senderId',
+                senderName: '$senderName',
+                conversationType: '$conversationType',
+                conversationId: '$conversationId',
+                createdAt: '$createdAt',
+              },
+            },
+          },
+        },
+      ]))
+      : [];
+    const unreadStats = visibleConversationIds.length > 0
+      ? await perfTracker.query('unreadCountQuery', 'visibleInternalUnreadStats', () => Message.aggregate([
+        {
+          $match: {
+            conversationType: { $in: visibleTypes },
+            conversationId: { $in: visibleConversationIds },
+            senderId: { $ne: userId },
+            readBy: { $ne: userId },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              conversationType: '$conversationType',
+              conversationId: '$conversationId',
+            },
+            unread: { $sum: 1 },
+            unreadMentionCount: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ['$conversationType', 'team'] },
+                      { $ne: ['$isDeleted', true] },
+                      { $in: [userId, { $ifNull: ['$mentionedUserIds', []] }] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]))
+      : [];
+    const unreadMentionMessages = visibleConversationIds.length > 0
+      ? await perfTracker.query('unreadCountQuery', 'visibleUnreadMentionMessageIds', () => Message.aggregate([
+        {
+          $match: {
+            conversationType: 'team',
+            conversationId: { $in: visibleConversationIds },
+            senderId: { $ne: userId },
+            readBy: { $ne: userId },
+            isDeleted: { $ne: true },
+            mentionedUserIds: userId,
+          },
+        },
+        { $sort: { conversationId: 1, createdAt: -1, _id: -1 } },
+        {
+          $group: {
+            _id: '$conversationId',
+            latestUnreadMentionMessageId: { $last: { $toString: '$_id' } },
+          },
+        },
+      ]))
+      : [];
+
+    perfTracker.measureSync('sortingFormatting', () => {
+      latestMessages.forEach(({ _id, message }) => {
+        const conversation = conversations.get(_id?.conversationId);
+        if (!conversation || _id?.conversationType !== conversation.conversationType) {
+          return;
+        }
+
+        if (!conversation.updatedAt || new Date(message.createdAt) > new Date(conversation.updatedAt)) {
+          conversation.lastMessage = buildMessagePreview(message) || 'New message';
+          conversation.lastMessageSenderName = message.senderName
+            || getAgentMeta(message.senderId).name
+            || '';
+          conversation.updatedAt = message.createdAt;
+        }
+      });
+
+      unreadStats.forEach((stat) => {
+        const conversation = conversations.get(stat?._id?.conversationId);
+        if (!conversation || stat?._id?.conversationType !== conversation.conversationType) {
+          return;
+        }
+
+        conversation.unread = Number(stat.unread || 0);
+        conversation.unreadMentionCount = Number(stat.unreadMentionCount || 0);
+      });
+
+      unreadMentionMessages.forEach((stat) => {
+        const conversation = conversations.get(stat?._id);
+        if (!conversation || conversation.conversationType !== 'team') {
+          return;
+        }
+
+        conversation.latestUnreadMentionMessageId = String(stat.latestUnreadMentionMessageId || '');
+      });
+    });
+
+    const result = perfTracker.measureSync('sortingFormatting', () => Array.from(conversations.values())
+      .filter((conversation) => isConversationVisible(conversation, userId, role))
+      .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)));
+
+    perfTracker.log({
+      status: 'success',
+      conversationCount: result.length,
+      dmRecordCount: dmRecords.length,
+      internalMessageCount: latestMessages.length,
+      teamConversationCount: visibleTeams.length,
+    });
+    return res.json(result);
+  } catch (error) {
+    perfTracker.log({
+      status: 'error',
+      errorName: error?.name || 'Error',
+    });
+    console.error('❌ Internal conversations error:', error);
+    return res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 };
 

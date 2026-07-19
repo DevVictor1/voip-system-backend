@@ -58,5 +58,7 @@ conversationSchema.index(
   { clientAccountId: 1, type: 1, lastMessageAt: -1 },
   { partialFilterExpression: { clientAccountId: { $type: 'objectId' } } }
 );
+conversationSchema.index({ type: 1, participants: 1, isArchived: 1, updatedAt: -1 });
+conversationSchema.index({ type: 1, teamId: 1, createdAt: 1 });
 
 module.exports = mongoose.model('Conversation', conversationSchema);
