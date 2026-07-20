@@ -9,7 +9,6 @@ const {
   updateMyAvatar,
   toggleMyFavoriteConversation,
   toggleMyTeamChatNotifications,
-  updateMyClosedTeamChat,
   bootstrapUser,
   listUsers,
   createUser,
@@ -29,7 +28,6 @@ router.patch('/me/availability-status', authenticate, updateMyAvailabilityStatus
 router.patch('/me/avatar', authenticate, updateMyAvatar);
 router.patch('/me/favorites', authenticate, toggleMyFavoriteConversation);
 router.patch('/me/team-chat-notifications', authenticate, toggleMyTeamChatNotifications);
-router.patch('/me/team-chat-closed', authenticate, updateMyClosedTeamChat);
 router.get('/teammates', authenticate, listTeammates);
 router.get('/agent-status', authenticate, requirePlatformAdmin, listAgentStatus);
 router.post('/bootstrap', bootstrapUser);

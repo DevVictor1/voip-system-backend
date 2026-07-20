@@ -763,42 +763,6 @@ exports.toggleMyTeamChatNotifications = async (req, res) => {
   }
 };
 
-exports.updateMyClosedTeamChat = async (req, res) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    if (typeof req.body?.closed !== 'boolean') {
-      return res.status(400).json({ error: 'closed must be true or false' });
-    }
-
-    const access = await resolveTeamPreferenceAccess(req.body?.conversationId, req.user);
-    if (access.error) {
-      return res.status(access.error.status).json(access.error.body);
-    }
-
-    const { conversationId } = access;
-    const existingValues = normalizeStringArray(req.user.closedTeamChatIds);
-
-    req.user.closedTeamChatIds = req.body.closed
-      ? normalizeStringArray([...existingValues, conversationId])
-      : existingValues.filter((value) => value !== conversationId);
-
-    await req.user.save();
-
-    return res.json({
-      user: sanitizeUser(req.user),
-      conversationType: 'team',
-      conversationId,
-      isClosed: req.user.closedTeamChatIds.includes(conversationId),
-    });
-  } catch (error) {
-    console.error('Auth update closed team chat error:', error);
-    return res.status(500).json({ error: 'Failed to update closed team chat preference' });
-  }
-};
-
 exports.bootstrapUser = async (req, res) => {
   try {
     const bootstrapToken = process.env.AUTH_BOOTSTRAP_TOKEN;
