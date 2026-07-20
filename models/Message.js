@@ -164,6 +164,19 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    claimedBy: {
+      type: String,
+      default: null,
+    },
+    claimedByName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    claimedAt: {
+      type: Date,
+      default: null,
+    },
     reactions: {
       type: [
         new mongoose.Schema(

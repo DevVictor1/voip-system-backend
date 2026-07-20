@@ -29,9 +29,10 @@ const {
    sendMessage,
    markConversationRead,
    editMessage,
-   softDeleteMessage,
-   togglePinMessage,
-   toggleMessageReaction,
+    softDeleteMessage,
+    togglePinMessage,
+    toggleMessageClaim,
+    toggleMessageReaction,
     getConversationNotes,
     createConversationNote,
     updateConversationNote,
@@ -253,6 +254,7 @@ router.put('/read/:conversationId', markConversationRead);
 router.put('/message/:messageId', editMessage);
 router.delete('/message/:messageId', softDeleteMessage);
 router.put('/message/:messageId/pin', togglePinMessage);
+router.put('/message/:messageId/claim', authenticate, toggleMessageClaim);
 router.put('/message/:messageId/reaction', toggleMessageReaction);
 router.get('/conversation/:conversationId/notes', getConversationNotes);
 router.post('/conversation/:conversationId/notes', createConversationNote);

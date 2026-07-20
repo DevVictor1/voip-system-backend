@@ -3751,6 +3751,78 @@ exports.togglePinMessage = async (req, res) => {
   }
 };
 
+exports.toggleMessageClaim = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const actor = getAuthenticatedInternalActor(req);
+    const { userId } = actor;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: 'Invalid messageId' });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message || message.conversationType !== 'team') {
+      return res.status(404).json({ error: 'Team message not found' });
+    }
+
+    if (message.isDeleted) {
+      return res.status(400).json({ error: 'Deleted messages cannot be claimed' });
+    }
+
+    const team = await getTeamDocumentByConversationId(message.conversationId);
+    const teamMembers = team
+      ? await resolveTeamMembers(team)
+      : getSortedParticipants(message.participants || []);
+
+    if (!teamMembers.includes(userId)) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const shouldClaim = req.body?.claimed !== false;
+    const currentClaimant = String(message.claimedBy || '').trim();
+
+    if (!shouldClaim) {
+      if (!currentClaimant) {
+        return res.json(buildFormattedInternalMessage(message, userId));
+      }
+
+      if (currentClaimant !== userId) {
+        return res.status(403).json({ error: 'Only the claimant can release this message' });
+      }
+
+      message.claimedBy = null;
+      message.claimedByName = '';
+      message.claimedAt = null;
+    } else {
+      if (currentClaimant && currentClaimant !== userId) {
+        return res.status(409).json({ error: 'This message is already claimed' });
+      }
+
+      if (!currentClaimant) {
+        const displayName = String(req.user?.name || req.user?.agentId || userId).trim();
+        message.claimedBy = userId;
+        message.claimedByName = displayName;
+        message.claimedAt = new Date();
+      }
+    }
+
+    await message.save();
+
+    const formatted = buildFormattedInternalMessage(message, userId);
+    emitInternalMessageMutation('internalMessageUpdated', formatted);
+
+    return res.json(formatted);
+  } catch (error) {
+    console.error('Internal claim message error:', error);
+    return res.status(500).json({ error: 'Failed to update message claim' });
+  }
+};
+
 exports.toggleMessageReaction = async (req, res) => {
   try {
     const { messageId } = req.params;
