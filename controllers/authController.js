@@ -431,6 +431,7 @@ exports.updateMyProfile = async (req, res) => {
     const resolvedName = normalizeOptionalText(`${firstName} ${lastName}`) || fallbackName || req.user.name;
     const email = String(req.body?.username || req.body?.email || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
+    const hasChatSoundEnabled = Object.prototype.hasOwnProperty.call(req.body || {}, 'chatNotificationSoundEnabled');
 
     if (!resolvedName) {
       return res.status(400).json({ error: 'Name is required' });
@@ -442,6 +443,14 @@ exports.updateMyProfile = async (req, res) => {
 
     if (password && password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    if (hasChatSoundEnabled && typeof req.body.chatNotificationSoundEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'Chat notification sound enabled must be true or false' });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'chatNotificationSound')) {
+      return res.status(400).json({ error: 'Chat notification sound selection is no longer supported' });
     }
 
     const existingUser = await User.findOne({
@@ -459,6 +468,10 @@ exports.updateMyProfile = async (req, res) => {
     req.user.email = email;
     req.user.callerId = normalizeOptionalText(req.body?.callerId);
     req.user.didNumber = normalizeOptionalText(req.body?.didNumber);
+
+    if (hasChatSoundEnabled) {
+      req.user.chatNotificationSoundEnabled = req.body.chatNotificationSoundEnabled;
+    }
 
     if (password) {
       req.user.password = password;

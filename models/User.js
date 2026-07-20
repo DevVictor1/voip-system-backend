@@ -120,6 +120,10 @@ const userSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    chatNotificationSoundEnabled: {
+      type: Boolean,
+      default: true,
+    },
   },
   { timestamps: true }
 );
@@ -173,6 +177,9 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       isAssignable: typeof this.isAssignable === 'boolean' ? this.isAssignable : true,
       favoritePersonalChatIds: Array.isArray(this.favoritePersonalChatIds) ? this.favoritePersonalChatIds : [],
       favoriteTeamChatIds: Array.isArray(this.favoriteTeamChatIds) ? this.favoriteTeamChatIds : [],
+      chatNotificationSoundEnabled: typeof this.chatNotificationSoundEnabled === 'boolean'
+        ? this.chatNotificationSoundEnabled
+        : true,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
     };
