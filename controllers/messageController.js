@@ -3823,6 +3823,65 @@ exports.toggleMessageClaim = async (req, res) => {
   }
 };
 
+exports.getClaimedTeamMessages = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const actor = getAuthenticatedInternalActor(req);
+    const { userId } = actor;
+    const normalizedConversationId = String(conversationId || '').trim();
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (!normalizedConversationId) {
+      return res.status(400).json({ error: 'Invalid conversation' });
+    }
+
+    const team = await getTeamDocumentByConversationId(normalizedConversationId);
+    if (!team) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const teamMembers = await resolveTeamMembers(team);
+    if (!teamMembers.includes(userId)) {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const resolvedConversationId = team.slug || normalizedConversationId;
+    const conversationIds = Array.from(new Set([
+      normalizedConversationId,
+      resolvedConversationId,
+    ].filter(Boolean)));
+    const messages = await Message.find({
+      conversationId: { $in: conversationIds },
+      conversationType: 'team',
+      isDeleted: { $ne: true },
+      claimedBy: { $exists: true, $nin: [null, ''] },
+    })
+      .select('_id conversationId createdAt body senderName senderId claimedBy claimedByName claimedAt')
+      .sort({ claimedAt: -1, createdAt: -1 })
+      .lean();
+
+    return res.json({
+      conversationId: resolvedConversationId,
+      claimedMessages: messages.map((message) => ({
+        messageId: String(message._id || ''),
+        conversationId: message.conversationId || resolvedConversationId,
+        createdAt: message.createdAt || null,
+        message: message.body || '',
+        senderName: message.senderName || message.senderId || '',
+        claimedBy: message.claimedBy || '',
+        claimedByName: message.claimedByName || message.claimedBy || '',
+        claimedAt: message.claimedAt || null,
+      })),
+    });
+  } catch (error) {
+    console.error('Claimed team messages fetch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch claimed team messages' });
+  }
+};
+
 exports.toggleMessageReaction = async (req, res) => {
   try {
     const { messageId } = req.params;

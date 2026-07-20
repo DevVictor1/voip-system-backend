@@ -32,6 +32,7 @@ const {
     softDeleteMessage,
     togglePinMessage,
     toggleMessageClaim,
+    getClaimedTeamMessages,
     toggleMessageReaction,
     getConversationNotes,
     createConversationNote,
@@ -231,6 +232,7 @@ router.get('/teams', authenticate, getTeams);
 router.get('/conversation/:conversationId', authenticate, getConversationRecord);
 router.post('/direct/start', startDirectConversation);
 router.post('/team', authenticate, createTeamConversation);
+router.get('/team/:conversationId/claims', authenticate, getClaimedTeamMessages);
 router.get('/team/:conversationId/details', authenticate, getTeamDetails);
 router.get('/team/:conversationId/calendar', getTeamCalendarEvents);
 router.patch('/team/:conversationId/calendar/timezone', updateTeamCalendarTimezone);
