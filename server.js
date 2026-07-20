@@ -60,30 +60,6 @@ app.use(
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-// Temporary upload-serving diagnostic. Remove after VM /uploads testing is complete.
-app.get('/debug-upload-test', (req, res, next) => {
-  const testFile = path.join(
-    uploadsPath,
-    'internal-chat',
-    '1784567702101-972567177.png'
-  );
-
-  res.sendFile(testFile, (error) => {
-    if (error) {
-      console.error('Debug upload sendFile failed:', {
-        testFile,
-        code: error.code,
-        status: error.status,
-        message: error.message,
-      });
-
-      if (!res.headersSent) {
-        next(error);
-      }
-    }
-  });
-});
-
 app.use('/uploads', express.static(uploadsPath));
 
 // ✅ ROUTES
