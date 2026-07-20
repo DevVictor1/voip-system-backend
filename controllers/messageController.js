@@ -3490,6 +3490,20 @@ exports.sendMessage = async (req, res) => {
       );
     }
 
+    if (conversationType === 'team' && deliveryRecipients.length > 0) {
+      const reopenTeamIds = [...new Set([
+        String(saved.conversationId || '').trim(),
+        String(saved.teamId || '').trim(),
+      ].filter(Boolean))];
+
+      if (reopenTeamIds.length > 0) {
+        await User.updateMany(
+          { agentId: { $in: deliveryRecipients } },
+          { $pull: { closedTeamChatIds: { $in: reopenTeamIds } } }
+        );
+      }
+    }
+
     if (global.io) {
       global.io.emit('newMessage', saved);
     }

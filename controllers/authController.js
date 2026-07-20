@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Call = require('../models/Call');
+const Team = require('../models/Team');
 const {
   isPlatformAdmin,
   normalizeRole: normalizeAccessRole,
@@ -372,6 +373,65 @@ const normalizeFavoriteConversationType = (value) => {
   return normalized === 'team' ? 'team' : normalized === 'internal_dm' ? 'internal_dm' : '';
 };
 
+const normalizePreferenceConversationId = (value) => String(value || '').trim();
+
+const normalizeStringArray = (values = []) => (
+  [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))]
+);
+
+const normalizeTeamDepartment = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['tech', 'support', 'sales'].includes(normalized) ? normalized : '';
+};
+
+const resolveTeamPreferenceAccess = async (conversationId, user) => {
+  const normalizedConversationId = normalizePreferenceConversationId(conversationId);
+  const userId = String(user?.agentId || '').trim();
+
+  if (!normalizedConversationId) {
+    return { error: { status: 400, body: { error: 'conversationId is required' } } };
+  }
+
+  if (!userId) {
+    return { error: { status: 403, body: { error: 'Not allowed' } } };
+  }
+
+  const team = await Team.findOne({
+    isActive: { $ne: false },
+    $or: [
+      { slug: normalizedConversationId },
+      { id: normalizedConversationId },
+    ],
+  }).lean();
+
+  if (!team) {
+    return { error: { status: 404, body: { error: 'Team not found' } } };
+  }
+
+  const department = normalizeTeamDepartment(team.department);
+  const departmentUsers = department
+    ? await User.find({
+      department,
+      isActive: true,
+      agentId: { $type: 'string', $ne: '' },
+    }).select('agentId').lean()
+    : [];
+  const teamMembers = normalizeStringArray([
+    ...(team.members || []),
+    ...departmentUsers.map((member) => member.agentId),
+  ]);
+  if (!teamMembers.includes(userId)) {
+    return { error: { status: 403, body: { error: 'You are not a member of this group' } } };
+  }
+
+  return {
+    conversationId: String(team.slug || normalizedConversationId).trim(),
+    team,
+  };
+};
+
 exports.login = async (req, res) => {
   try {
     if (!getJwtSecret()) {
@@ -667,6 +727,75 @@ exports.toggleMyFavoriteConversation = async (req, res) => {
   } catch (error) {
     console.error('Auth toggle favorite conversation error:', error);
     return res.status(500).json({ error: 'Failed to update favorites' });
+  }
+};
+
+exports.toggleMyTeamChatNotifications = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const access = await resolveTeamPreferenceAccess(req.body?.conversationId, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { conversationId } = access;
+    const existingValues = normalizeStringArray(req.user.mutedTeamChatIds);
+    const isMuted = existingValues.includes(conversationId);
+
+    req.user.mutedTeamChatIds = isMuted
+      ? existingValues.filter((value) => value !== conversationId)
+      : [...existingValues, conversationId];
+
+    await req.user.save();
+
+    return res.json({
+      user: sanitizeUser(req.user),
+      conversationType: 'team',
+      conversationId,
+      isMuted: !isMuted,
+    });
+  } catch (error) {
+    console.error('Auth toggle team notifications error:', error);
+    return res.status(500).json({ error: 'Failed to update team notification preference' });
+  }
+};
+
+exports.updateMyClosedTeamChat = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (typeof req.body?.closed !== 'boolean') {
+      return res.status(400).json({ error: 'closed must be true or false' });
+    }
+
+    const access = await resolveTeamPreferenceAccess(req.body?.conversationId, req.user);
+    if (access.error) {
+      return res.status(access.error.status).json(access.error.body);
+    }
+
+    const { conversationId } = access;
+    const existingValues = normalizeStringArray(req.user.closedTeamChatIds);
+
+    req.user.closedTeamChatIds = req.body.closed
+      ? normalizeStringArray([...existingValues, conversationId])
+      : existingValues.filter((value) => value !== conversationId);
+
+    await req.user.save();
+
+    return res.json({
+      user: sanitizeUser(req.user),
+      conversationType: 'team',
+      conversationId,
+      isClosed: req.user.closedTeamChatIds.includes(conversationId),
+    });
+  } catch (error) {
+    console.error('Auth update closed team chat error:', error);
+    return res.status(500).json({ error: 'Failed to update closed team chat preference' });
   }
 };
 

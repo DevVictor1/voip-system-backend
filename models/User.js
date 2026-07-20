@@ -120,6 +120,14 @@ const userSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    mutedTeamChatIds: {
+      type: [String],
+      default: [],
+    },
+    closedTeamChatIds: {
+      type: [String],
+      default: [],
+    },
     chatNotificationSoundEnabled: {
       type: Boolean,
       default: true,
@@ -177,6 +185,8 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       isAssignable: typeof this.isAssignable === 'boolean' ? this.isAssignable : true,
       favoritePersonalChatIds: Array.isArray(this.favoritePersonalChatIds) ? this.favoritePersonalChatIds : [],
       favoriteTeamChatIds: Array.isArray(this.favoriteTeamChatIds) ? this.favoriteTeamChatIds : [],
+      mutedTeamChatIds: Array.isArray(this.mutedTeamChatIds) ? this.mutedTeamChatIds : [],
+      closedTeamChatIds: Array.isArray(this.closedTeamChatIds) ? this.closedTeamChatIds : [],
       chatNotificationSoundEnabled: typeof this.chatNotificationSoundEnabled === 'boolean'
         ? this.chatNotificationSoundEnabled
         : true,
