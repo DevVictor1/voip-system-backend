@@ -621,8 +621,80 @@ const getThreadReadStatesByMessageId = async (messages = [], userId = '') => {
 };
 
 const buildThreadCommentPayload = (comment) => ({
-  ...comment.toObject(),
+  ...(typeof comment?.toObject === 'function' ? comment.toObject() : { ...(comment || {}) }),
 });
+
+const buildThreadCommentActivity = ({ comment, parentMessage, commentCountAtThisEntry }) => {
+  const commentPayload = buildThreadCommentPayload(comment);
+  const parentPayload = typeof parentMessage?.toObject === 'function'
+    ? parentMessage.toObject()
+    : { ...(parentMessage || {}) };
+  const commentId = String(commentPayload?._id || '').trim();
+  const parentMessageId = String(commentPayload?.parentMessageId || parentPayload?._id || '').trim();
+
+  if (!commentId || !parentMessageId) {
+    return null;
+  }
+
+  return {
+    type: 'thread_comment_activity',
+    id: `thread-comment:${commentId}`,
+    commentId,
+    parentMessageId,
+    conversationId: commentPayload.conversationId || parentPayload.conversationId || '',
+    conversationType: commentPayload.conversationType || parentPayload.conversationType || '',
+    createdAt: commentPayload.createdAt || null,
+    commentCountAtThisEntry: Number(commentCountAtThisEntry || 0),
+    parentMessage: parentPayload,
+    comment: commentPayload,
+  };
+};
+
+const getThreadCommentActivitiesByMessageId = async (messages = []) => {
+  const parentMessageIds = messages
+    .map((message) => String(message?._id || '').trim())
+    .filter(Boolean);
+
+  if (!parentMessageIds.length) {
+    return new Map();
+  }
+
+  const comments = await MessageThreadComment.find({
+    parentMessageId: { $in: parentMessageIds },
+  }).sort({ parentMessageId: 1, createdAt: 1, _id: 1 }).lean();
+
+  const parentMessagesById = messages.reduce((acc, message) => {
+    const messageId = String(message?._id || '').trim();
+    if (messageId) {
+      acc.set(messageId, message);
+    }
+    return acc;
+  }, new Map());
+  const countsByParentId = new Map();
+  const activitiesByParentId = new Map();
+
+  comments.forEach((comment) => {
+    const parentMessageId = String(comment?.parentMessageId || '').trim();
+    const parentMessage = parentMessagesById.get(parentMessageId);
+    if (!parentMessage) return;
+
+    const nextCount = Number(countsByParentId.get(parentMessageId) || 0) + 1;
+    countsByParentId.set(parentMessageId, nextCount);
+
+    const activity = buildThreadCommentActivity({
+      comment,
+      parentMessage,
+      commentCountAtThisEntry: nextCount,
+    });
+    if (!activity) return;
+
+    const currentActivities = activitiesByParentId.get(parentMessageId) || [];
+    currentActivities.push(activity);
+    activitiesByParentId.set(parentMessageId, currentActivities);
+  });
+
+  return activitiesByParentId;
+};
 
 const syncMessageCommentCount = async (messageId, latestComment = null) => {
   const parentMessageId = String(messageId || '').trim();
@@ -3097,11 +3169,15 @@ exports.getThread = async (req, res) => {
     }
 
     const threadReadStatesByMessageId = await getThreadReadStatesByMessageId(pageMessages, userId);
+    const threadCommentActivitiesByMessageId = await getThreadCommentActivitiesByMessageId(pageMessages);
     const formatted = pageMessages.map((message) => buildFormattedInternalMessage(
       message,
       userId,
       threadReadStatesByMessageId.get(String(message?._id || '')) || null
-    ));
+    )).map((message) => ({
+      ...message,
+      threadCommentActivities: threadCommentActivitiesByMessageId.get(String(message?._id || '')) || [],
+    }));
 
     if (shouldPaginate) {
       return res.json({
