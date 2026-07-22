@@ -1,30 +1,39 @@
-﻿const AccessToken = require('twilio').jwt.AccessToken;
+const AccessToken = require('twilio').jwt.AccessToken;
 const VoiceGrant = AccessToken.VoiceGrant;
+
+const normalizeEnvValue = (value) => String(value || '').trim();
 
 exports.generateToken = (req, res) => {
   try {
-    const identity = req.query.userId || 'web_user'; // ðŸ”¥ fallback to web_user
+    const identity = req.query.userId || 'web_user';
+    const env = {
+      accountSid: normalizeEnvValue(process.env.TWILIO_ACCOUNT_SID),
+      apiKey: normalizeEnvValue(process.env.TWILIO_API_KEY),
+      apiSecret: normalizeEnvValue(process.env.TWILIO_API_SECRET),
+      twimlAppSid: normalizeEnvValue(process.env.TWILIO_TWIML_APP_SID),
+    };
 
     const token = new AccessToken(
-      process.env.TWILIO_ACCOUNT_SID,
-      process.env.TWILIO_API_KEY,
-      process.env.TWILIO_API_SECRET,
+      env.accountSid,
+      env.apiKey,
+      env.apiSecret,
       { identity }
     );
 
     const voiceGrant = new VoiceGrant({
-      outgoingApplicationSid: process.env.TWILIO_TWIML_APP_SID,
+      outgoingApplicationSid: env.twimlAppSid,
       incomingAllow: true,
     });
 
     token.addGrant(voiceGrant);
 
-    res.json({
-      token: token.toJwt(),
-    });
+    const jwt = token.toJwt();
 
+    res.json({
+      token: jwt,
+    });
   } catch (err) {
-    console.error('âŒ Token error:', err);
+    console.error('Token error:', err);
     res.status(500).json({ error: 'Failed to generate token' });
   }
 };
